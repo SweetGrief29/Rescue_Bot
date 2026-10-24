@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none';script-src 'unsafe-inline' https://esm.sh;connect-src 'self' https: http://127.0.0.1:* http://localhost:*;style-src 'unsafe-inline'">
+<title>Rescue Console 7702</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--card:#f4f4f2;--bd:#d8d8d4;--ac:#1d5fd1;--err:#c0262d;--ok:#1a7f45}
+@media(prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee;--mut:#9a9a9a;--card:#222;--bd:#3a3a3a;--ac:#6ea2ff;--err:#ff7b80;--ok:#5fd68f}}
+body{font:14px system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:880px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 8px}.warn{background:var(--card);border:1px solid var(--err);border-radius:8px;padding:10px;margin:10px 0;color:var(--fg)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:640px){.grid{grid-template-columns:1fr}}
+label{display:block;font-size:12px;color:var(--mut);margin:6px 0 2px}
+input,select,textarea{width:100%;box-sizing:border-box;padding:7px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--fg);font:13px ui-monospace,monospace}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+button{padding:8px 14px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer}
+button.p{background:var(--ac);color:#fff;border-color:var(--ac)}button:disabled{opacity:.5;cursor:wait}
+#log{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:10px;min-height:140px;max-height:360px;overflow:auto;white-space:pre-wrap;font:12px ui-monospace,monospace}
+.err{color:var(--err)}.ok{color:var(--ok)}a{color:var(--ac)}
+</style></head><body>
+<h1>Rescue Console (EIP-7702)</h1>
+<div class="warn"><b>Jalankan lokal saja.</b> Private key hanya dipakai di memori halaman ini dan tidak disimpan. Halaman hanya menghubungi RPC yang Anda isi dan esm.sh (memuat viem). Untuk wallet bernilai, simpan viem secara lokal dan buka file ini offline dari sumber yang Anda kontrol. Gunakan hanya untuk wallet milik sendiri.</div>
+<div class="grid">
+<div><label>Action Type</label><select id="action"><option value="claim_transfer">Claim &amp; Transfer (call lalu kirim token)</option><option value="transfer">Transfer saja (token sudah di wallet)</option><option value="custom">Custom call saja (tanpa transfer)</option></select>
+<label>Jaringan</label><select id="net"><option value="sepolia">Sepolia (simulasi/uji)</option><option value="base">Base mainnet</option></select>
+<label>RPC (kosong = pakai backend bila terhubung, jika tidak RPC publik)</label><input id="rpc" placeholder="https://...">
+<label>Private key wallet bocor</label><input id="leakedPk" type="password" autocomplete="off" spellcheck="false">
+<label>Private key sponsor gas (kosong = pakai sponsor dari backend)</label><input id="sponsorPk" type="password" autocomplete="off" spellcheck="false">
+<div class="row"><button id="gen">Buat 2 wallet uji</button></div></div>
+<div><label>Wallet aman (SAFE)</label><input id="safe">
+<label>Kontrak delegate (RescueDelegate)</label><input id="delegate">
+<label>Token</label><input id="token">
+<label>Target contract (klaim / custom call)</label><input id="claim">
+<label>Native value (ETH) dikirim bersama call, diambil dari saldo wallet bocor</label><input id="value" value="0">
+<label>Jumlah token ke SAFE (angka, mis. 100; atau all = seluruh saldo)</label><input id="amount"></div></div>
+<label>Raw calldata (hex), fungsi apa pun: claim, unstake, dll</label><textarea id="claimData" rows="2" placeholder="0x..."></textarea>
+<div class="row"><button id="preset">Isi calldata claim() (kontrak uji)</button></div>
+<label><input type="checkbox" id="own" style="width:auto"> Saya pemilik wallet bocor ini</label>
+<div class="row"><button id="check">1. Cek</button><button id="sim" class="p">2. Simulasi</button><button id="send">3. Kirim</button><button id="clean">Hapus delegasi</button></div>
+<div id="log"></div>
+<script type="module">
+import {createPublicClient,createWalletClient,http,parseAbi,parseUnits,parseEther,formatUnits,formatEther,encodeFunctionData,encodeAbiParameters,parseAbiParameters,keccak256,getAddress,isAddress,isHex,zeroAddress} from "https://esm.sh/viem@2.30.0";
+import {privateKeyToAccount,generatePrivateKey} from "https://esm.sh/viem@2.30.0/accounts";
+const $=i=>document.getElementById(i);
+const NETS={sepolia:{id:11155111,name:"Sepolia",rpc:"https://ethereum-sepolia-rpc.publicnode.com",ex:"https://sepolia.etherscan.io"},base:{id:8453,name:"Base",rpc:"https://mainnet.base.org",ex:"https://basescan.org"}};
+const ERC20=parseAbi(["function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)","function symbol() view returns (string)","function transfer(address,uint256) returns (bool)"]);
+const SWEEP=parseAbi(["function sweepToken(address token,address to)"]);
+const EXEC=parseAbi(["function execute((address target,uint256 value,bytes data)[] calls,uint256 deadline,bytes sig)"]);
+let CFG=null;
+const log=(m,c="")=>{const d=document.createElement("div");d.className=c;d.textContent=`[${new Date().toLocaleTimeString()}] ${m}`;$("log").append(d);$("log").scrollTop=1e9};
+const key=i=>{let v=$(i).value.trim();if(!v.startsWith("0x"))v="0x"+v;if(!/^0x[0-9a-fA-F]{64}$/.test(v))throw new Error("Private key tidak valid: "+i);return v};
+const addr=i=>{const v=$(i).value.trim();if(!isAddress(v))throw new Error("Alamat tidak valid: "+i);return getAddress(v)};
+const delegOf=c=>c&&c.toLowerCase().startsWith("0xef0100")&&c.length===48?getAddress("0x"+c.slice(8)):null;
+function ctx(){const n=NETS[$("net").value],net=$("net").value,rpc=$("rpc").value.trim()||(CFG?.networks?.[net]?.available?location.origin+"/rpc/"+net:n.rpc);
+const chain={id:n.id,name:n.name,nativeCurrency:{name:"Ether",symbol:"ETH",decimals:18},rpcUrls:{default:{http:[rpc]}}};
+const leaked=privateKeyToAccount(key("leakedPk")),relay=!!CFG?.sponsor&&!$("sponsorPk").value.trim();
+const sponsor=relay?{address:CFG.sponsor}:privateKeyToAccount(key("sponsorPk"));
+return{n,relay,pub:createPublicClient({chain,transport:http(rpc)}),wallet:createWalletClient({...(relay?{}:{account:sponsor}),chain,transport:http(rpc)}),leaked,sponsor}}
+const ser=a=>({address:a.address,chainId:a.chainId,nonce:a.nonce,r:a.r,s:a.s,yParity:a.yParity});
+async function relayCall(c,mode,data,a){const r=await fetch("/api/relay",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({net:$("net").value,mode,to:c.leaked.address,data,authorization:ser(a)})});const j=await r.json();if(!r.ok)throw new Error(j.error||"relay gagal");return j}
+async function guard(c){const id=await c.pub.getChainId();if(id!==c.n.id)throw new Error(`RPC chain ID ${id} != ${c.n.name} (${c.n.id})`)}
+async function current(c){const code=await c.pub.getCode({address:c.leaked.address});
+if(code&&code!=="0x"&&!delegOf(code))throw new Error("Wallet berisi kontrak biasa, bukan delegasi 7702. Berhenti.");return delegOf(code)}
+async function run(f){document.querySelectorAll("button").forEach(b=>b.disabled=true);try{await f()}catch(e){log("✗ "+(e.shortMessage||e.message),"err")}finally{document.querySelectorAll("button").forEach(b=>b.disabled=false)}}
+async function prepare(c){
+const act=$("action").value,DELEGATE=addr("delegate");
+const dc=await c.pub.getCode({address:DELEGATE});if(!dc||dc==="0x")throw new Error("DELEGATE belum ter-deploy di jaringan ini");
+const calls=[];let SAFE=null,TOKEN=null;
+if(act!=="custom"){SAFE=addr("safe");TOKEN=addr("token");if(SAFE===c.leaked.address)throw new Error("SAFE tidak boleh sama dengan wallet bocor")}
+if(act!=="transfer"){const cd=$("claimData").value.trim()||"0x";if(!isHex(cd))throw new Error("Calldata bukan hex");
+calls.push({target:addr("claim"),value:parseEther($("value").value.trim()||"0"),data:cd})}
+if(act!=="custom"){const am=$("amount").value.trim().toLowerCase();
+if(am==="all")calls.push({target:c.leaked.address,value:0n,data:encodeFunctionData({abi:SWEEP,functionName:"sweepToken",args:[TOKEN,SAFE]})});
+else{const dec=await c.pub.readContract({address:TOKEN,abi:ERC20,functionName:"decimals"});const amount=parseUnits(am||"0",dec);if(amount<=0n)throw new Error("Jumlah harus > 0 (atau isi all)");
+calls.push({target:TOKEN,value:0n,data:encodeFunctionData({abi:ERC20,functionName:"transfer",args:[SAFE,amount]})})}}
+if(!calls.length)throw new Error("Tidak ada call");
+const deadline=BigInt(Math.floor(Date.now()/1000)+300);
+const ch=keccak256(encodeAbiParameters(parseAbiParameters("(address target,uint256 value,bytes data)[]"),[calls]));
+const digest=keccak256(encodeAbiParameters(parseAbiParameters("uint256,address,bytes32,uint256"),[BigInt(c.n.id),c.leaked.address,ch,deadline]));
+const sig=await c.leaked.signMessage({message:{raw:digest}});
+const authorization=await c.wallet.signAuthorization({account:c.leaked,contractAddress:DELEGATE});
+const data=encodeFunctionData({abi:EXEC,functionName:"execute",args:[calls,deadline,sig]});
+return{SAFE,DELEGATE,TOKEN,authorization,data}}
+const est=async(c,p)=>c.relay?BigInt((await relayCall(c,"simulate",p.data,p.authorization)).gas):c.pub.estimateGas({account:c.sponsor.address,to:c.leaked.address,data:p.data,authorizationList:[p.authorization]});
+$("gen").onclick=()=>{const a=generatePrivateKey(),b=generatePrivateKey();$("leakedPk").value=a;if(!CFG?.sponsor)$("sponsorPk").value=b;
+log("Wallet uji dibuat. Bocor: "+privateKeyToAccount(a).address+" | Sponsor (danai dengan Sepolia ETH dari faucet): "+privateKeyToAccount(b).address)};
+$("preset").onclick=()=>{$("claimData").value=encodeFunctionData({abi:parseAbi(["function claim()"]),functionName:"claim"})};
+$("check").onclick=()=>run(async()=>{const c=ctx();await guard(c);log("Jaringan "+c.n.name+" OK","ok");
+const[lb,sb]=await Promise.all([c.pub.getBalance({address:c.leaked.address}),c.pub.getBalance({address:c.sponsor.address})]);
+log(`Wallet bocor ${c.leaked.address}: ${formatEther(lb)} ETH`);log(`Sponsor ${c.sponsor.address}: ${formatEther(sb)} ETH`+(sb===0n?" (kosong, danai dulu)":""),sb===0n?"err":"");
+const d=await current(c);log("Delegasi aktif: "+(d?d+(d===$("delegate").value.trim()?" (kontrak kita)":" (AKAN DITIMPA)"):"tidak ada"));
+if(isAddress($("token").value.trim())){const t=addr("token"),s=await c.pub.readContract({address:t,abi:ERC20,functionName:"symbol"}).catch(()=>"?"),dec=await c.pub.readContract({address:t,abi:ERC20,functionName:"decimals"});
+for(const[l,a]of[["bocor",c.leaked.address],["SAFE",isAddress($("safe").value.trim())?addr("safe"):null]])if(a)log(`Saldo ${s} ${l}: ${formatUnits(await c.pub.readContract({address:t,abi:ERC20,functionName:"balanceOf",args:[a]}),dec)}`)}});
+$("sim").onclick=()=>run(async()=>{const c=ctx();await guard(c);const p=await prepare(c);const g=await est(c,p);log("✓ Simulasi berhasil. Estimasi gas: "+g+" (klaim + transfer tidak revert)","ok")});
+$("send").onclick=()=>run(async()=>{if(!$("own").checked)throw new Error("Centang konfirmasi kepemilikan wallet dulu");
+const c=ctx();await guard(c);const p=await prepare(c);await est(c,p);log("Simulasi OK","ok");
+if(!confirm(`Kirim transaksi NYATA di ${c.n.name}? Tujuan token: ${p.SAFE??"-"}`))return log("Dibatalkan");
+const hash=c.relay?(await relayCall(c,"send",p.data,p.authorization)).hash:await c.wallet.sendTransaction({to:c.leaked.address,data:p.data,authorizationList:[p.authorization],maxPriorityFeePerGas:10000000n});
+log("tx: "+hash+"  "+c.n.ex+"/tx/"+hash);const r=await c.pub.waitForTransactionReceipt({hash});
+if(r.status!=="success")throw new Error("Transaksi gagal");
+const d=await current(c);log(d===p.DELEGATE?"✓ Delegasi sekarang: kontrak kita":"PERINGATAN delegasi sekarang: "+d,d===p.DELEGATE?"ok":"err");
+log("Selesai. Jalankan 'Hapus delegasi' lalu berhenti memakai wallet bocor.","ok")});
+$("clean").onclick=()=>run(async()=>{const c=ctx();await guard(c);const d=await current(c);if(!d)return log("Tidak ada delegasi aktif");
+const a=await c.wallet.signAuthorization({account:c.leaked,contractAddress:zeroAddress});
+if(c.relay)await relayCall(c,"simulate","0x",a);else await c.pub.estimateGas({account:c.sponsor.address,to:c.leaked.address,data:"0x",authorizationList:[a]});
+if(!confirm("Kirim transaksi nyata untuk menghapus delegasi?"))return;
+const h=c.relay?(await relayCall(c,"send","0x",a)).hash:await c.wallet.sendTransaction({to:c.leaked.address,data:"0x",authorizationList:[a],maxPriorityFeePerGas:10000000n});
+await c.pub.waitForTransactionReceipt({hash:h});log("✓ Delegasi dihapus: "+h,"ok")});
+function applyDefaults(){if(!CFG)return;const d=CFG.defaults||{},nd=d[$("net").value]||{};
+const set=(id,v)=>{if(v!==undefined&&v!=="")$(id).value=v};set("safe",d.safe);
+for(const k of["delegate","token","claim","claimData","amount","value","action"])set(k,nd[k])}
+$("net").onchange=applyDefaults;
+fetch("/api/config").then(r=>r.ok?r.json():null).then(j=>{if(!j)return;CFG=j;applyDefaults();if(j.configError)log("✗ "+j.configError,"err");
+log("Terhubung ke backend. RPC: "+Object.entries(j.networks).map(([k,v])=>k+(v.available?" OK":" belum diisi")).join(", ")+". Default dari config.json terisi."+(j.sponsor?" Sponsor backend: "+j.sponsor:" (sponsor backend tidak aktif, isi key sponsor manual)"),"ok")}).catch(()=>{});
+log("Siap. Untuk uji Sepolia: klik 'Buat 2 wallet uji', danai sponsor dari faucet, deploy kontrak (lihat balasan), isi form.");
+</script></body></html>

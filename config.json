@@ -1,0 +1,21 @@
+{
+  "safe": "",
+  "sepolia": {
+    "action": "claim_transfer",
+    "delegate": "0x9cfb01ce1FF55F303A054c191e98660245cca940",
+    "token": "0x900E13430332fe13D8A628ED3f5bdb4495608B52",
+    "claim": "",
+    "claimData": "0x4e71d92d",
+    "amount": "all",
+    "value": "0"
+  },
+  "base": {
+    "action": "claim_transfer",
+    "delegate": "",
+    "token": "",
+    "claim": "",
+    "claimData": "",
+    "amount": "all",
+    "value": "0"
+  }
+}

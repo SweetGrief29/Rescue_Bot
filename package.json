@@ -1,0 +1,13 @@
+{
+  "name": "rescue-7702",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "tsx rescue.ts check",
+    "rescue": "tsx rescue.ts rescue",
+    "cleanup": "tsx rescue.ts cleanup"
+  },
+  "dependencies": { "dotenv": "^16.4.5", "viem": "^2.30.0" },
+  "devDependencies": { "tsx": "^4.19.0" }
+}

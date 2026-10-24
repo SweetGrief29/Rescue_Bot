@@ -1,0 +1,3 @@
+======== SEPOLIA ========
+Smart contract rescue = 0x9cfb01ce1FF55F303A054c191e98660245cca940
+Token test $GGAR = 0x900E13430332fe13D8A628ED3f5bdb4495608B52
