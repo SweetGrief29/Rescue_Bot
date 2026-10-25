@@ -8,6 +8,12 @@
     "rescue": "tsx rescue.ts rescue",
     "cleanup": "tsx rescue.ts cleanup"
   },
-  "dependencies": { "dotenv": "^16.4.5", "viem": "^2.30.0" },
-  "devDependencies": { "tsx": "^4.19.0" }
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "viem": "^2.30.0",
+    "bootstrap": "^5.3.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
 }

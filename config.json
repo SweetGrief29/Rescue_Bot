@@ -3,15 +3,15 @@
   "sepolia": {
     "action": "claim_transfer",
     "delegate": "0x9cfb01ce1FF55F303A054c191e98660245cca940",
-    "token": "0x900E13430332fe13D8A628ED3f5bdb4495608B52",
+    "token": "",
     "claim": "",
-    "claimData": "0x4e71d92d",
+    "claimData": "",
     "amount": "all",
     "value": "0"
   },
   "base": {
     "action": "claim_transfer",
-    "delegate": "",
+    "delegate": "0x1663B3278CfD96d3476838d628e55e1A8c4541B2",
     "token": "",
     "claim": "",
     "claimData": "",

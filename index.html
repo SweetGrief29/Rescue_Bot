@@ -1,115 +1,1149 @@
 <!doctype html>
-<html lang="id"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none';script-src 'unsafe-inline' https://esm.sh;connect-src 'self' https: http://127.0.0.1:* http://localhost:*;style-src 'unsafe-inline'">
-<title>Rescue Console 7702</title>
-<style>
-:root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--card:#f4f4f2;--bd:#d8d8d4;--ac:#1d5fd1;--err:#c0262d;--ok:#1a7f45}
-@media(prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee;--mut:#9a9a9a;--card:#222;--bd:#3a3a3a;--ac:#6ea2ff;--err:#ff7b80;--ok:#5fd68f}}
-body{font:14px system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:880px;margin:0 auto;padding:16px}
-h1{font-size:20px;margin:0 0 8px}.warn{background:var(--card);border:1px solid var(--err);border-radius:8px;padding:10px;margin:10px 0;color:var(--fg)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:640px){.grid{grid-template-columns:1fr}}
-label{display:block;font-size:12px;color:var(--mut);margin:6px 0 2px}
-input,select,textarea{width:100%;box-sizing:border-box;padding:7px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--fg);font:13px ui-monospace,monospace}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
-button{padding:8px 14px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer}
-button.p{background:var(--ac);color:#fff;border-color:var(--ac)}button:disabled{opacity:.5;cursor:wait}
-#log{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:10px;min-height:140px;max-height:360px;overflow:auto;white-space:pre-wrap;font:12px ui-monospace,monospace}
-.err{color:var(--err)}.ok{color:var(--ok)}a{color:var(--ac)}
-</style></head><body>
-<h1>Rescue Console (EIP-7702)</h1>
-<div class="warn"><b>Jalankan lokal saja.</b> Private key hanya dipakai di memori halaman ini dan tidak disimpan. Halaman hanya menghubungi RPC yang Anda isi dan esm.sh (memuat viem). Untuk wallet bernilai, simpan viem secara lokal dan buka file ini offline dari sumber yang Anda kontrol. Gunakan hanya untuk wallet milik sendiri.</div>
-<div class="grid">
-<div><label>Action Type</label><select id="action"><option value="claim_transfer">Claim &amp; Transfer (call lalu kirim token)</option><option value="transfer">Transfer saja (token sudah di wallet)</option><option value="custom">Custom call saja (tanpa transfer)</option></select>
-<label>Jaringan</label><select id="net"><option value="sepolia">Sepolia (simulasi/uji)</option><option value="base">Base mainnet</option></select>
-<label>RPC (kosong = pakai backend bila terhubung, jika tidak RPC publik)</label><input id="rpc" placeholder="https://...">
-<label>Private key wallet bocor</label><input id="leakedPk" type="password" autocomplete="off" spellcheck="false">
-<label>Private key sponsor gas (kosong = pakai sponsor dari backend)</label><input id="sponsorPk" type="password" autocomplete="off" spellcheck="false">
-<div class="row"><button id="gen">Buat 2 wallet uji</button></div></div>
-<div><label>Wallet aman (SAFE)</label><input id="safe">
-<label>Kontrak delegate (RescueDelegate)</label><input id="delegate">
-<label>Token</label><input id="token">
-<label>Target contract (klaim / custom call)</label><input id="claim">
-<label>Native value (ETH) dikirim bersama call, diambil dari saldo wallet bocor</label><input id="value" value="0">
-<label>Jumlah token ke SAFE (angka, mis. 100; atau all = seluruh saldo)</label><input id="amount"></div></div>
-<label>Raw calldata (hex), fungsi apa pun: claim, unstake, dll</label><textarea id="claimData" rows="2" placeholder="0x..."></textarea>
-<div class="row"><button id="preset">Isi calldata claim() (kontrak uji)</button></div>
-<label><input type="checkbox" id="own" style="width:auto"> Saya pemilik wallet bocor ini</label>
-<div class="row"><button id="check">1. Cek</button><button id="sim" class="p">2. Simulasi</button><button id="send">3. Kirim</button><button id="clean">Hapus delegasi</button></div>
-<div id="log"></div>
-<script type="module">
-import {createPublicClient,createWalletClient,http,parseAbi,parseUnits,parseEther,formatUnits,formatEther,encodeFunctionData,encodeAbiParameters,parseAbiParameters,keccak256,getAddress,isAddress,isHex,zeroAddress} from "https://esm.sh/viem@2.30.0";
-import {privateKeyToAccount,generatePrivateKey} from "https://esm.sh/viem@2.30.0/accounts";
-const $=i=>document.getElementById(i);
-const NETS={sepolia:{id:11155111,name:"Sepolia",rpc:"https://ethereum-sepolia-rpc.publicnode.com",ex:"https://sepolia.etherscan.io"},base:{id:8453,name:"Base",rpc:"https://mainnet.base.org",ex:"https://basescan.org"}};
-const ERC20=parseAbi(["function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)","function symbol() view returns (string)","function transfer(address,uint256) returns (bool)"]);
-const SWEEP=parseAbi(["function sweepToken(address token,address to)"]);
-const EXEC=parseAbi(["function execute((address target,uint256 value,bytes data)[] calls,uint256 deadline,bytes sig)"]);
-let CFG=null;
-const log=(m,c="")=>{const d=document.createElement("div");d.className=c;d.textContent=`[${new Date().toLocaleTimeString()}] ${m}`;$("log").append(d);$("log").scrollTop=1e9};
-const key=i=>{let v=$(i).value.trim();if(!v.startsWith("0x"))v="0x"+v;if(!/^0x[0-9a-fA-F]{64}$/.test(v))throw new Error("Private key tidak valid: "+i);return v};
-const addr=i=>{const v=$(i).value.trim();if(!isAddress(v))throw new Error("Alamat tidak valid: "+i);return getAddress(v)};
-const delegOf=c=>c&&c.toLowerCase().startsWith("0xef0100")&&c.length===48?getAddress("0x"+c.slice(8)):null;
-function ctx(){const n=NETS[$("net").value],net=$("net").value,rpc=$("rpc").value.trim()||(CFG?.networks?.[net]?.available?location.origin+"/rpc/"+net:n.rpc);
-const chain={id:n.id,name:n.name,nativeCurrency:{name:"Ether",symbol:"ETH",decimals:18},rpcUrls:{default:{http:[rpc]}}};
-const leaked=privateKeyToAccount(key("leakedPk")),relay=!!CFG?.sponsor&&!$("sponsorPk").value.trim();
-const sponsor=relay?{address:CFG.sponsor}:privateKeyToAccount(key("sponsorPk"));
-return{n,relay,pub:createPublicClient({chain,transport:http(rpc)}),wallet:createWalletClient({...(relay?{}:{account:sponsor}),chain,transport:http(rpc)}),leaked,sponsor}}
-const ser=a=>({address:a.address,chainId:a.chainId,nonce:a.nonce,r:a.r,s:a.s,yParity:a.yParity});
-async function relayCall(c,mode,data,a){const r=await fetch("/api/relay",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({net:$("net").value,mode,to:c.leaked.address,data,authorization:ser(a)})});const j=await r.json();if(!r.ok)throw new Error(j.error||"relay gagal");return j}
-async function guard(c){const id=await c.pub.getChainId();if(id!==c.n.id)throw new Error(`RPC chain ID ${id} != ${c.n.name} (${c.n.id})`)}
-async function current(c){const code=await c.pub.getCode({address:c.leaked.address});
-if(code&&code!=="0x"&&!delegOf(code))throw new Error("Wallet berisi kontrak biasa, bukan delegasi 7702. Berhenti.");return delegOf(code)}
-async function run(f){document.querySelectorAll("button").forEach(b=>b.disabled=true);try{await f()}catch(e){log("✗ "+(e.shortMessage||e.message),"err")}finally{document.querySelectorAll("button").forEach(b=>b.disabled=false)}}
-async function prepare(c){
-const act=$("action").value,DELEGATE=addr("delegate");
-const dc=await c.pub.getCode({address:DELEGATE});if(!dc||dc==="0x")throw new Error("DELEGATE belum ter-deploy di jaringan ini");
-const calls=[];let SAFE=null,TOKEN=null;
-if(act!=="custom"){SAFE=addr("safe");TOKEN=addr("token");if(SAFE===c.leaked.address)throw new Error("SAFE tidak boleh sama dengan wallet bocor")}
-if(act!=="transfer"){const cd=$("claimData").value.trim()||"0x";if(!isHex(cd))throw new Error("Calldata bukan hex");
-calls.push({target:addr("claim"),value:parseEther($("value").value.trim()||"0"),data:cd})}
-if(act!=="custom"){const am=$("amount").value.trim().toLowerCase();
-if(am==="all")calls.push({target:c.leaked.address,value:0n,data:encodeFunctionData({abi:SWEEP,functionName:"sweepToken",args:[TOKEN,SAFE]})});
-else{const dec=await c.pub.readContract({address:TOKEN,abi:ERC20,functionName:"decimals"});const amount=parseUnits(am||"0",dec);if(amount<=0n)throw new Error("Jumlah harus > 0 (atau isi all)");
-calls.push({target:TOKEN,value:0n,data:encodeFunctionData({abi:ERC20,functionName:"transfer",args:[SAFE,amount]})})}}
-if(!calls.length)throw new Error("Tidak ada call");
-const deadline=BigInt(Math.floor(Date.now()/1000)+300);
-const ch=keccak256(encodeAbiParameters(parseAbiParameters("(address target,uint256 value,bytes data)[]"),[calls]));
-const digest=keccak256(encodeAbiParameters(parseAbiParameters("uint256,address,bytes32,uint256"),[BigInt(c.n.id),c.leaked.address,ch,deadline]));
-const sig=await c.leaked.signMessage({message:{raw:digest}});
-const authorization=await c.wallet.signAuthorization({account:c.leaked,contractAddress:DELEGATE});
-const data=encodeFunctionData({abi:EXEC,functionName:"execute",args:[calls,deadline,sig]});
-return{SAFE,DELEGATE,TOKEN,authorization,data}}
-const est=async(c,p)=>c.relay?BigInt((await relayCall(c,"simulate",p.data,p.authorization)).gas):c.pub.estimateGas({account:c.sponsor.address,to:c.leaked.address,data:p.data,authorizationList:[p.authorization]});
-$("gen").onclick=()=>{const a=generatePrivateKey(),b=generatePrivateKey();$("leakedPk").value=a;if(!CFG?.sponsor)$("sponsorPk").value=b;
-log("Wallet uji dibuat. Bocor: "+privateKeyToAccount(a).address+" | Sponsor (danai dengan Sepolia ETH dari faucet): "+privateKeyToAccount(b).address)};
-$("preset").onclick=()=>{$("claimData").value=encodeFunctionData({abi:parseAbi(["function claim()"]),functionName:"claim"})};
-$("check").onclick=()=>run(async()=>{const c=ctx();await guard(c);log("Jaringan "+c.n.name+" OK","ok");
-const[lb,sb]=await Promise.all([c.pub.getBalance({address:c.leaked.address}),c.pub.getBalance({address:c.sponsor.address})]);
-log(`Wallet bocor ${c.leaked.address}: ${formatEther(lb)} ETH`);log(`Sponsor ${c.sponsor.address}: ${formatEther(sb)} ETH`+(sb===0n?" (kosong, danai dulu)":""),sb===0n?"err":"");
-const d=await current(c);log("Delegasi aktif: "+(d?d+(d===$("delegate").value.trim()?" (kontrak kita)":" (AKAN DITIMPA)"):"tidak ada"));
-if(isAddress($("token").value.trim())){const t=addr("token"),s=await c.pub.readContract({address:t,abi:ERC20,functionName:"symbol"}).catch(()=>"?"),dec=await c.pub.readContract({address:t,abi:ERC20,functionName:"decimals"});
-for(const[l,a]of[["bocor",c.leaked.address],["SAFE",isAddress($("safe").value.trim())?addr("safe"):null]])if(a)log(`Saldo ${s} ${l}: ${formatUnits(await c.pub.readContract({address:t,abi:ERC20,functionName:"balanceOf",args:[a]}),dec)}`)}});
-$("sim").onclick=()=>run(async()=>{const c=ctx();await guard(c);const p=await prepare(c);const g=await est(c,p);log("✓ Simulasi berhasil. Estimasi gas: "+g+" (klaim + transfer tidak revert)","ok")});
-$("send").onclick=()=>run(async()=>{if(!$("own").checked)throw new Error("Centang konfirmasi kepemilikan wallet dulu");
-const c=ctx();await guard(c);const p=await prepare(c);await est(c,p);log("Simulasi OK","ok");
-if(!confirm(`Kirim transaksi NYATA di ${c.n.name}? Tujuan token: ${p.SAFE??"-"}`))return log("Dibatalkan");
-const hash=c.relay?(await relayCall(c,"send",p.data,p.authorization)).hash:await c.wallet.sendTransaction({to:c.leaked.address,data:p.data,authorizationList:[p.authorization],maxPriorityFeePerGas:10000000n});
-log("tx: "+hash+"  "+c.n.ex+"/tx/"+hash);const r=await c.pub.waitForTransactionReceipt({hash});
-if(r.status!=="success")throw new Error("Transaksi gagal");
-const d=await current(c);log(d===p.DELEGATE?"✓ Delegasi sekarang: kontrak kita":"PERINGATAN delegasi sekarang: "+d,d===p.DELEGATE?"ok":"err");
-log("Selesai. Jalankan 'Hapus delegasi' lalu berhenti memakai wallet bocor.","ok")});
-$("clean").onclick=()=>run(async()=>{const c=ctx();await guard(c);const d=await current(c);if(!d)return log("Tidak ada delegasi aktif");
-const a=await c.wallet.signAuthorization({account:c.leaked,contractAddress:zeroAddress});
-if(c.relay)await relayCall(c,"simulate","0x",a);else await c.pub.estimateGas({account:c.sponsor.address,to:c.leaked.address,data:"0x",authorizationList:[a]});
-if(!confirm("Kirim transaksi nyata untuk menghapus delegasi?"))return;
-const h=c.relay?(await relayCall(c,"send","0x",a)).hash:await c.wallet.sendTransaction({to:c.leaked.address,data:"0x",authorizationList:[a],maxPriorityFeePerGas:10000000n});
-await c.pub.waitForTransactionReceipt({hash:h});log("✓ Delegasi dihapus: "+h,"ok")});
-function applyDefaults(){if(!CFG)return;const d=CFG.defaults||{},nd=d[$("net").value]||{};
-const set=(id,v)=>{if(v!==undefined&&v!=="")$(id).value=v};set("safe",d.safe);
-for(const k of["delegate","token","claim","claimData","amount","value","action"])set(k,nd[k])}
-$("net").onchange=applyDefaults;
-fetch("/api/config").then(r=>r.ok?r.json():null).then(j=>{if(!j)return;CFG=j;applyDefaults();if(j.configError)log("✗ "+j.configError,"err");
-log("Terhubung ke backend. RPC: "+Object.entries(j.networks).map(([k,v])=>k+(v.available?" OK":" belum diisi")).join(", ")+". Default dari config.json terisi."+(j.sponsor?" Sponsor backend: "+j.sponsor:" (sponsor backend tidak aktif, isi key sponsor manual)"),"ok")}).catch(()=>{});
-log("Siap. Untuk uji Sepolia: klik 'Buat 2 wallet uji', danai sponsor dari faucet, deploy kontrak (lihat balasan), isi form.");
-</script></body></html>
+<html lang="id" translate="no" data-bs-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="google" content="notranslate" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none';script-src 'unsafe-inline' https://esm.sh;connect-src 'self' https: http://127.0.0.1:* http://localhost:*;style-src 'self' 'unsafe-inline'"
+    />
+    <title>Rescue Console 7702</title>
+    <link rel="stylesheet" href="/vendor/bootstrap.css" />
+    <style>
+      /* fallback: aktif hanya bila bootstrap.css tidak termuat (:where = spesifisitas nol, Bootstrap selalu menang) */
+      :where(input, select, textarea) {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid var(--bd);
+        border-radius: 8px;
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+      }
+      :where(input[type="checkbox"]) {
+        width: auto;
+      }
+      :where(button) {
+        padding: 10px 14px;
+        border: 1px solid var(--btn-bd);
+        border-radius: 8px;
+        background: var(--btn-bg);
+        color: var(--btn-fg);
+        cursor: pointer;
+        font: inherit;
+      }
+      :where(button:hover:not(:disabled)) {
+        background: var(--btn-hbg);
+        color: var(--btn-hfg);
+      }
+      :where(button:disabled) {
+        opacity: 0.5;
+        cursor: wait;
+      }
+      :where(.btn-primary, .tab.active) {
+        background: var(--pbtn-bg);
+        color: var(--pbtn-fg);
+        border-color: var(--pbtn-bd);
+      }
+      :where(.btn-outline-danger) {
+        color: var(--err);
+        border-color: var(--err);
+      }
+      :where(.alert) {
+        border: 1px solid var(--bd);
+        border-radius: 8px;
+        padding: 12px;
+        line-height: 1.5;
+      }
+      :where(.alert-warning) {
+        border-color: #e0a100;
+        color: #e0a100;
+      }
+      :where(.alert-primary) {
+        border-color: #3b8eea;
+        color: #3b8eea;
+      }
+      :where(.card) {
+        border: 1px solid var(--bd);
+        border-radius: 10px;
+        background: var(--bg);
+      }
+      :where(.card-body) {
+        padding: 6px 16px 16px;
+      }
+      :where(.small) {
+        font-size: 12px;
+      }
+      :where(.mt-3) {
+        margin-top: 14px;
+      }
+      :where(.me-2) {
+        margin-right: 8px;
+      }
+      :root {
+        --bg: #0b0b0c;
+        --fg: #eee;
+        --mut: #8d8d92;
+        --card: #141416;
+        --bd: #2a2a2e;
+        --err: #ff6b70;
+        --ok: #5fd68f;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #fafaf8;
+          --fg: #1a1a1a;
+          --mut: #666;
+          --card: #fff;
+          --bd: #d8d8d4;
+          --err: #c0262d;
+          --ok: #1a7f45;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font:
+          14px ui-monospace,
+          Menlo,
+          Consolas,
+          monospace;
+        background: var(--bg);
+        color: var(--fg);
+        margin: 0;
+        padding: 20px;
+      }
+      .wrap {
+        max-width: 780px;
+        margin: 0 auto;
+        background: var(--card);
+        border: 1px solid var(--bd);
+        border-radius: 12px;
+        padding: 26px;
+      }
+      h1 {
+        font-size: 26px;
+        margin: 0;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 22px 0 4px;
+      }
+      h3 {
+        font-size: 15px;
+        margin: 0 0 4px;
+      }
+      .mut {
+        color: var(--mut);
+        font-size: 12px;
+      }
+      .bar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 14px 0;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--bd);
+      }
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin: 6px 0 4px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--mut);
+        margin: 12px 0 4px;
+      }
+      .cp {
+        display: flex;
+        gap: 8px;
+      }
+      .cp .form-control {
+        flex: 1;
+        min-width: 0;
+      }
+      .cp .btn {
+        white-space: nowrap;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 14px 0;
+      }
+      .actions > .btn {
+        flex: 1;
+      }
+      .cols {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 14px;
+      }
+      @media (max-width: 640px) {
+        .cols {
+          grid-template-columns: 1fr;
+        }
+      }
+      #log {
+        margin-top: 18px;
+        border: 1px solid var(--bd);
+        border-radius: 8px;
+        padding: 10px;
+        min-height: 110px;
+        max-height: 300px;
+        overflow: auto;
+        white-space: pre-wrap;
+        font-size: 12px;
+      }
+      .err {
+        color: var(--err);
+      }
+      .ok {
+        color: var(--ok);
+      }
+      a {
+        color: inherit;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      /* ===== BUTTON THEME. Ganti lewat pemilih "Buttons" di halaman, atau set data-btn pada <html>: default | inverse | accent | soft ===== */
+      :root {
+        --btn-bg: transparent;
+        --btn-fg: var(--fg);
+        --btn-bd: var(--bd);
+        --btn-hbg: var(--fg);
+        --btn-hfg: var(--bg);
+        --btn-hbd: var(--fg);
+        --pbtn-bg: var(--fg);
+        --pbtn-fg: var(--bg);
+        --pbtn-bd: var(--fg);
+        --pbtn-hbg: transparent;
+        --pbtn-hfg: var(--fg);
+        --pbtn-hbd: var(--fg);
+      }
+      html[data-btn="inverse"] {
+        --btn-bg: var(--fg);
+        --btn-fg: var(--bg);
+        --btn-bd: var(--fg);
+        --btn-hbg: transparent;
+        --btn-hfg: var(--fg);
+        --btn-hbd: var(--fg);
+        --pbtn-bg: transparent;
+        --pbtn-fg: var(--fg);
+        --pbtn-bd: var(--fg);
+        --pbtn-hbg: var(--fg);
+        --pbtn-hfg: var(--bg);
+        --pbtn-hbd: var(--fg);
+      }
+      html[data-btn="accent"] {
+        --pbtn-bg: #3b8eea;
+        --pbtn-fg: #fff;
+        --pbtn-bd: #3b8eea;
+        --pbtn-hbg: #2f78c9;
+        --pbtn-hfg: #fff;
+        --pbtn-hbd: #2f78c9;
+      }
+      html[data-btn="soft"] {
+        --btn-bg: var(--bd);
+        --btn-fg: var(--fg);
+        --btn-bd: transparent;
+        --btn-hbg: var(--mut);
+        --btn-hfg: var(--bg);
+        --btn-hbd: transparent;
+      }
+      .wrap .btn {
+        --bs-btn-bg: var(--btn-bg);
+        --bs-btn-color: var(--btn-fg);
+        --bs-btn-border-color: var(--btn-bd);
+        --bs-btn-hover-bg: var(--btn-hbg);
+        --bs-btn-hover-color: var(--btn-hfg);
+        --bs-btn-hover-border-color: var(--btn-hbd);
+        --bs-btn-active-bg: var(--btn-hbg);
+        --bs-btn-active-color: var(--btn-hfg);
+        --bs-btn-active-border-color: var(--btn-hbd);
+        --bs-btn-disabled-bg: var(--btn-bg);
+        --bs-btn-disabled-color: var(--btn-fg);
+        --bs-btn-disabled-border-color: var(--btn-bd);
+      }
+      .wrap .btn-primary,
+      .wrap .btn.tab.active {
+        --bs-btn-bg: var(--pbtn-bg);
+        --bs-btn-color: var(--pbtn-fg);
+        --bs-btn-border-color: var(--pbtn-bd);
+        --bs-btn-hover-bg: var(--pbtn-hbg);
+        --bs-btn-hover-color: var(--pbtn-hfg);
+        --bs-btn-hover-border-color: var(--pbtn-hbd);
+        --bs-btn-active-bg: var(--pbtn-bg);
+        --bs-btn-active-color: var(--pbtn-fg);
+        --bs-btn-active-border-color: var(--pbtn-bd);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="row mb-1 justify-content-between align-items-center">
+        <div class="col">
+          <h1>Sweet Grief</h1>
+          <div class="mut">1-click all-in-one transaction</div>
+        </div>
+        <div class="col">
+          <div style="width: 200px">
+            <select autocomplete="off" class="form-select" id="net">
+              <option value="base">Base Mainnet</option>
+              <option value="sepolia">Sepolia (testnet)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="bar"></div>
+        <input
+          id="rpc"
+          type="hidden"
+          autocomplete="off"
+          spellcheck="false"
+          autocapitalize="off"
+        />
+      </div>
+      <div class="tabs">
+        <button class="btn btn-outline-secondary tab active" data-t="sponsor">
+          Sponsor Wallet</button
+        ><button class="btn btn-outline-secondary tab" data-t="rescue">
+          Rescue Wallet
+        </button>
+      </div>
+
+      <section id="t-sponsor">
+        <h2>Sponsor Wallet</h2>
+        <div class="mut">
+          Temporary wallet that pays gas. Created in this browser.
+        </div>
+        <div id="chainBanner" class="alert alert-secondary mt-3"></div>
+        <div id="spEmpty" class="card card-body" style="margin-top: 14px">
+          <p>No sponsor wallet yet.</p>
+          <div class="actions">
+            <button class="btn btn-primary" id="gen">Generate Wallet</button>
+          </div>
+          <div class="mut" id="beNote"></div>
+        </div>
+        <div id="spBox" hidden>
+          <div class="card card-body" style="margin-top: 14px">
+            <h3>Wallet Profile</h3>
+            <label>Fund on network</label
+            ><input
+              class="form-control"
+              id="spChain"
+              readonly
+              autocomplete="off"
+              spellcheck="false"
+              autocapitalize="off"
+            />
+            <label>Sponsor Address (send ETH here)</label>
+            <div class="cp">
+              <input
+                class="form-control"
+                id="spAddr"
+                readonly
+                autocomplete="off"
+                spellcheck="false"
+                autocapitalize="off"
+              /><button class="btn btn-outline-secondary" data-copy="spAddr">
+                Copy
+              </button>
+            </div>
+            <div class="mut" style="margin-top: 6px">
+              <a id="spLink" target="_blank" rel="noopener">View on explorer</a>
+            </div>
+            <label>Balance on <span id="netName">-</span></label>
+            <div class="cp">
+              <input
+                class="form-control"
+                id="spBal"
+                readonly
+                value="-"
+                autocomplete="off"
+                spellcheck="false"
+                autocapitalize="off"
+              /><button class="btn btn-outline-secondary" id="refresh">
+                Refresh
+              </button>
+            </div>
+            <div class="mut" id="spHint"></div>
+          </div>
+          <div class="card card-body" style="margin-top: 14px">
+            <h3>Wallet Keys</h3>
+            <div class="mut">
+              Anyone with these controls the wallet. Never share.
+            </div>
+            <label>Private Key</label>
+            <div class="cp">
+              <input
+                class="form-control"
+                id="spPk"
+                type="password"
+                readonly
+                autocomplete="new-password"
+                spellcheck="false"
+                autocapitalize="off"
+              /><button class="btn btn-outline-secondary" data-show="spPk">
+                Show</button
+              ><button class="btn btn-outline-secondary" data-copy="spPk">
+                Copy
+              </button>
+            </div>
+            <label>Secret Recovery Phrase</label>
+            <div class="cp">
+              <input
+                class="form-control"
+                id="spMn"
+                type="password"
+                readonly
+                autocomplete="new-password"
+                spellcheck="false"
+                autocapitalize="off"
+              /><button class="btn btn-outline-secondary" data-show="spMn">
+                Show</button
+              ><button class="btn btn-outline-secondary" data-copy="spMn">
+                Copy
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="actions" id="spBtns" hidden>
+          <button class="btn btn-primary" id="gen2">Generate New Wallet</button
+          ><button class="btn btn-outline-danger" id="del">
+            Delete Wallet
+          </button>
+        </div>
+      </section>
+
+      <section id="t-rescue" hidden>
+        <h2>Rescue Wallet</h2>
+        <label>Action Type</label
+        ><select autocomplete="off" class="form-select" id="action">
+          <option value="claim_transfer">Claim &amp; Transfer</option>
+          <option value="transfer">Transfer only</option>
+          <option value="custom">Custom call</option>
+        </select>
+        <div class="cols">
+          <div>
+            <label>Compromised key</label
+            ><input
+              class="form-control"
+              id="leakedPk"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <div class="mut" id="leakInfo"></div>
+            <label>Safe wallet</label
+            ><input
+              class="form-control"
+              id="safe"
+              autocomplete="off"
+              spellcheck="false"
+              autocapitalize="off"
+            />
+            <input
+              id="delegate"
+              type="hidden"
+              autocomplete="off"
+              spellcheck="false"
+              autocapitalize="off"
+            /><label>Token Address</label
+            ><input
+              class="form-control"
+              id="token"
+              autocomplete="off"
+              spellcheck="false"
+              autocapitalize="off"
+            />
+          </div>
+          <div>
+            <label>Target contract</label
+            ><input
+              class="form-control"
+              id="claim"
+              autocomplete="off"
+              spellcheck="false"
+              autocapitalize="off"
+            />
+            <label>Native value</label
+            ><input
+              class="form-control"
+              id="value"
+              value="0"
+              autocomplete="off"
+              spellcheck="false"
+              autocapitalize="off"
+            />
+             <label>Raw calldata (hex)</label
+        ><input
+          class="form-control"
+          id="claimData"
+          rows="2"
+          placeholder="0x..."
+          autocomplete="off"
+          spellcheck="false"
+          autocapitalize="off"
+        ></input>
+          </div>
+        </div>
+       
+        <label class="align-items-center d-flex"
+          ><input
+            class="form-check-input me-2"
+            type="checkbox"
+            id="own"
+            autocomplete="off"
+            spellcheck="false"
+            autocapitalize="off"
+          />
+          I own this compromised wallet</label
+        >
+        <div class="actions">
+          <button id="exec" class="btn btn-primary">Execute</button>
+        </div>
+      </section>
+      <div id="log"></div>
+    </div>
+
+    <script type="module">
+      import {
+        createPublicClient,
+        createWalletClient,
+        http,
+        parseAbi,
+        parseUnits,
+        parseEther,
+        formatUnits,
+        formatEther,
+        encodeFunctionData,
+        encodeAbiParameters,
+        parseAbiParameters,
+        keccak256,
+        getAddress,
+        isAddress,
+        isHex,
+        zeroAddress,
+        toHex,
+      } from "https://esm.sh/viem@2.30.0";
+      import {
+        privateKeyToAccount,
+        generatePrivateKey,
+        generateMnemonic,
+        mnemonicToAccount,
+        english,
+      } from "https://esm.sh/viem@2.30.0/accounts";
+      const $ = (i) => {
+        const e = document.getElementById(i);
+        if (!e)
+          throw new Error(
+            `Element #${i} not found. index.html is incomplete or outdated.`,
+          );
+        return e;
+      };
+      const NETS = {
+        sepolia: {
+          id: 11155111,
+          name: "Sepolia",
+          rpc: "https://ethereum-sepolia-rpc.publicnode.com",
+          ex: "https://sepolia.etherscan.io",
+        },
+        base: {
+          id: 8453,
+          name: "Base",
+          rpc: "https://mainnet.base.org",
+          ex: "https://basescan.org",
+        },
+      };
+      const ERC20 = parseAbi([
+        "function balanceOf(address) view returns (uint256)",
+        "function decimals() view returns (uint8)",
+        "function symbol() view returns (string)",
+        "function transfer(address,uint256) returns (bool)",
+      ]);
+      const SWEEP = parseAbi(["function sweepToken(address token,address to)"]);
+      const EXEC = parseAbi([
+        "function execute((address target,uint256 value,bytes data)[] calls,uint256 deadline,bytes sig)",
+      ]);
+      const mq = matchMedia("(prefers-color-scheme: dark)"),
+        setTheme = () =>
+          document.documentElement.setAttribute(
+            "data-bs-theme",
+            mq.matches ? "dark" : "light",
+          );
+      setTheme();
+      mq.addEventListener("change", setTheme);
+      const BT = ["default", "inverse", "accent", "soft"];
+      function applyBtn(v) {
+        if (!BT.includes(v)) v = "default";
+        document.documentElement.setAttribute("data-btn", v);
+        $("btnTheme").value = v;
+        try {
+          localStorage.setItem("rescue.btn", v);
+        } catch {}
+      }
+      let CFG = null,
+        SP = null;
+      const SK = "rescue.sponsor.v1";
+      const log = (m, c = "") => {
+        const d = document.createElement("div");
+        d.className = c;
+        d.textContent = `[${new Date().toLocaleTimeString()}] ${m}`;
+        $("log").append(d);
+        $("log").scrollTop = 1e9;
+      };
+      const KEYRE = /^0x[0-9a-fA-F]{64}$/;
+      const key = (i) => {
+        let v = $(i).value.trim();
+        if (!v.startsWith("0x")) v = "0x" + v;
+        if (!KEYRE.test(v)) throw new Error("Invalid private key: " + i);
+        return v;
+      };
+      const addr = (i) => {
+        const v = $(i).value.trim();
+        if (!isAddress(v)) throw new Error("Invalid address: " + i);
+        return getAddress(v);
+      };
+      const delegOf = (c) =>
+        c && c.toLowerCase().startsWith("0xef0100") && c.length === 48
+          ? getAddress("0x" + c.slice(8))
+          : null;
+      const fmt = (v) => {
+        const [i, d = ""] = formatEther(v).split(".");
+        return i + "." + d.padEnd(6, "0").slice(0, 6);
+      };
+      try {
+        const raw = localStorage.getItem(SK);
+        if (raw) {
+          const o = JSON.parse(raw);
+          if (KEYRE.test(o.pk)) SP = o;
+        }
+      } catch {}
+      const saveSP = () => {
+        try {
+          SP
+            ? localStorage.setItem(SK, JSON.stringify(SP))
+            : localStorage.removeItem(SK);
+        } catch {
+          log("Warning: localStorage blocked, wallet will not be saved", "err");
+        }
+      };
+
+      // ---------- jaringan & konteks ----------
+      function netCtx() {
+        const net = $("net").value,
+          n = NETS[net],
+          rpc =
+            (document.getElementById("rpc")?.value || "").trim() ||
+            (CFG?.networks?.[net]?.available
+              ? location.origin + "/rpc/" + net
+              : n.rpc);
+        const chain = {
+          id: n.id,
+          name: n.name,
+          nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+          rpcUrls: { default: { http: [rpc] } },
+        };
+        return {
+          net,
+          n,
+          rpc,
+          chain,
+          pub: createPublicClient({ chain, transport: http(rpc) }),
+        };
+      }
+      function ctx() {
+        const b = netCtx(),
+          leaked = privateKeyToAccount(key("leakedPk"));
+        const local = SP ? privateKeyToAccount(SP.pk) : null,
+          relay = !local && !!CFG?.sponsor;
+        if (!local && !relay)
+          throw new Error(
+            "No sponsor wallet. Open the Sponsor Wallet tab and click Generate Wallet.",
+          );
+        const sponsor = local ?? { address: CFG.sponsor };
+        return {
+          ...b,
+          relay,
+          leaked,
+          sponsor,
+          wallet: createWalletClient({
+            ...(local ? { account: local } : {}),
+            chain: b.chain,
+            transport: http(b.rpc),
+          }),
+        };
+      }
+      const ser = (a) => ({
+        address: a.address,
+        chainId: a.chainId,
+        nonce: a.nonce,
+        r: a.r,
+        s: a.s,
+        yParity: a.yParity,
+      });
+      async function relayCall(c, mode, data, a) {
+        const r = await fetch("/api/relay", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            net: $("net").value,
+            mode,
+            to: c.leaked.address,
+            data,
+            authorization: ser(a),
+          }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "relay failed");
+        return j;
+      }
+      async function guard(c) {
+        const id = await c.pub.getChainId();
+        if (id !== c.n.id)
+          throw new Error(
+            `RPC chain ID ${id} does not match ${c.n.name} (${c.n.id})`,
+          );
+      }
+      async function current(c) {
+        const code = await c.pub.getCode({ address: c.leaked.address });
+        if (code && code !== "0x" && !delegOf(code))
+          throw new Error(
+            "Wallet holds regular contract code, not a 7702 delegation. Stopped.",
+          );
+        return delegOf(code);
+      }
+      async function run(f) {
+        document
+          .querySelectorAll("button:not(.tab)")
+          .forEach((b) => (b.disabled = true));
+        try {
+          await f();
+        } catch (e) {
+          log("✗ " + (e.shortMessage || e.message), "err");
+        } finally {
+          document
+            .querySelectorAll("button:not(.tab)")
+            .forEach((b) => (b.disabled = false));
+        }
+      }
+
+      // ---------- saldo ----------
+      function renderChain() {
+        const net = $("net").value,
+          n = NETS[net],
+          test = net === "sepolia";
+        $("chainBanner").className =
+          "alert mt-3 " + (test ? "alert-warning" : "alert-primary");
+        $("chainBanner").textContent = test
+          ? `Active: ${n.name} Testnet (Chain ID ${n.id}). Fund with Sepolia ETH from a faucet.`
+          : `Active: ${n.name} Mainnet (Chain ID ${n.id}). Real ETH. Send ETH on ${n.name}, not Ethereum mainnet.`;
+        $("spChain").value = `${n.name} (Chain ID ${n.id}), gas token: ETH`;
+        $("netName").textContent = n.name;
+        const a = SP ? privateKeyToAccount(SP.pk).address : null;
+        $("spLink").hidden = !a;
+        if (a) $("spLink").href = `${n.ex}/address/${a}`;
+      }
+      async function refresh() {
+        let b;
+        try {
+          renderChain();
+          b = netCtx();
+        } catch (e) {
+          $("spHint").textContent = "Network setup failed: " + e.message;
+          return;
+        }
+        try {
+          const sa = SP ? privateKeyToAccount(SP.pk).address : CFG?.sponsor;
+          if (sa) {
+            const bal = await b.pub.getBalance({ address: sa });
+            $("spBal").value = fmt(bal) + " ETH";
+            $("spHint").textContent =
+              bal === 0n
+                ? `Empty on ${b.n.name}. Send ETH on ${b.n.name} to the sponsor address.`
+                : "";
+          }
+        } catch (e) {
+          $("spHint").textContent =
+            "Failed to read sponsor balance: " + (e.shortMessage || e.message);
+        }
+        try {
+          const k = $("leakedPk").value.trim(),
+            kk = k.startsWith("0x") ? k : "0x" + k;
+          if (KEYRE.test(kk)) {
+            const la = privateKeyToAccount(kk).address;
+            $("leakInfo").textContent =
+              `${la} | ${fmt(await b.pub.getBalance({ address: la }))} ETH on ${b.n.name}`;
+          } else $("leakInfo").textContent = "";
+        } catch (e) {
+          $("leakInfo").textContent =
+            "Failed to read compromised wallet balance: " +
+            (e.shortMessage || e.message);
+        }
+      }
+      function renderSP() {
+        const has = !!SP,
+          a = has ? privateKeyToAccount(SP.pk).address : null;
+        $("spEmpty").hidden = has;
+        $("spBox").hidden = !has;
+        $("spBtns").hidden = !has;
+        if (has) {
+          $("spAddr").value = a;
+          $("spPk").value = SP.pk;
+          $("spMn").value = SP.mnemonic || "(none, imported from key)";
+        }
+        $("beNote").textContent = CFG?.sponsor
+          ? `Backend sponsor active (${CFG.sponsor}); used when no local wallet exists.`
+          : "";
+        refresh();
+      }
+
+      // ---------- sponsor wallet ----------
+      function newWallet() {
+        if (
+          SP &&
+          !confirm(
+            "The old sponsor wallet will be removed. Make sure it is empty or backed up. Continue?",
+          )
+        )
+          return;
+        const m = generateMnemonic(english),
+          pk = toHex(mnemonicToAccount(m).getHdKey().privateKey);
+        SP = { pk, mnemonic: m };
+        saveSP();
+        renderSP();
+        log("New sponsor wallet: " + privateKeyToAccount(pk).address, "ok");
+      }
+      $("gen").onclick = newWallet;
+      $("gen2").onclick = newWallet;
+      $("del").onclick = () => {
+        if (
+          !confirm(
+            "Delete the sponsor wallet? Remaining funds are lost without the recovery phrase.",
+          )
+        )
+          return;
+        SP = null;
+        saveSP();
+        renderSP();
+        log("Sponsor wallet deleted");
+      };
+      $("refresh").onclick = refresh;
+      document.addEventListener("click", (e) => {
+        const t = e.target;
+        if (t.dataset?.copy)
+          navigator.clipboard
+            .writeText($(t.dataset.copy).value)
+            .then(() => {
+              const o = t.textContent;
+              t.textContent = "Copied";
+              setTimeout(() => (t.textContent = o), 1200);
+            })
+            .catch(() => log("Copy failed", "err"));
+        if (t.dataset?.show) {
+          const i = $(t.dataset.show);
+          i.type = i.type === "password" ? "text" : "password";
+          t.textContent = i.type === "text" ? "Hide" : "Show";
+        }
+      });
+      document.querySelectorAll(".tab").forEach(
+        (b) =>
+          (b.onclick = () => {
+            document
+              .querySelectorAll(".tab")
+              .forEach((x) => x.classList.toggle("active", x === b));
+            $("t-sponsor").hidden = b.dataset.t !== "sponsor";
+            $("t-rescue").hidden = b.dataset.t !== "rescue";
+          }),
+      );
+      $("net").onchange = () => {
+        applyDefaults();
+        renderChain();
+        refresh();
+      };
+      let tm;
+      $("leakedPk").oninput = () => {
+        clearTimeout(tm);
+        tm = setTimeout(refresh, 500);
+      };
+      setInterval(() => {
+        if (!document.hidden) refresh();
+      }, 20000);
+
+      // ---------- rescue ----------
+      async function prepare(c) {
+        const act = $("action").value,
+          dv = $("delegate").value.trim();
+        if (!isAddress(dv))
+          throw new Error(
+            `No delegate set for ${c.n.name}. Add "${$("net").value}" -> "delegate" in config.json, then reload.`,
+          );
+        const DELEGATE = getAddress(dv);
+        const dc = await c.pub.getCode({ address: DELEGATE });
+        if (!dc || dc === "0x")
+          throw new Error("Delegate contract not deployed on this network");
+        const calls = [];
+        let SAFE = null,
+          TOKEN = null;
+        if (act !== "custom") {
+          SAFE = addr("safe");
+          TOKEN = addr("token");
+          if (SAFE === c.leaked.address)
+            throw new Error(
+              "Safe wallet must differ from the compromised wallet",
+            );
+        }
+        if (act !== "transfer") {
+          const cd = $("claimData").value.trim() || "0x";
+          if (!isHex(cd)) throw new Error("Calldata is not hex");
+          calls.push({
+            target: addr("claim"),
+            value: parseEther($("value").value.trim() || "0"),
+            data: cd,
+          });
+        }
+        if (act !== "custom") {
+          const am = "all";
+          if (am === "all")
+            calls.push({
+              target: c.leaked.address,
+              value: 0n,
+              data: encodeFunctionData({
+                abi: SWEEP,
+                functionName: "sweepToken",
+                args: [TOKEN, SAFE],
+              }),
+            });
+          else {
+            const dec = await c.pub.readContract({
+              address: TOKEN,
+              abi: ERC20,
+              functionName: "decimals",
+            });
+            const amount = parseUnits(am || "0", dec);
+            if (amount <= 0n) throw new Error("Amount must be > 0");
+            calls.push({
+              target: TOKEN,
+              value: 0n,
+              data: encodeFunctionData({
+                abi: ERC20,
+                functionName: "transfer",
+                args: [SAFE, amount],
+              }),
+            });
+          }
+        }
+        if (!calls.length) throw new Error("No calls");
+        const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
+        const ch = keccak256(
+          encodeAbiParameters(
+            parseAbiParameters("(address target,uint256 value,bytes data)[]"),
+            [calls],
+          ),
+        );
+        const digest = keccak256(
+          encodeAbiParameters(
+            parseAbiParameters("uint256,address,bytes32,uint256"),
+            [BigInt(c.n.id), c.leaked.address, ch, deadline],
+          ),
+        );
+        const sig = await c.leaked.signMessage({ message: { raw: digest } });
+        const authorization = await c.wallet.signAuthorization({
+          account: c.leaked,
+          contractAddress: DELEGATE,
+        });
+        const data = encodeFunctionData({
+          abi: EXEC,
+          functionName: "execute",
+          args: [calls, deadline, sig],
+        });
+        return { SAFE, DELEGATE, TOKEN, authorization, data };
+      }
+      const est = async (c, p) =>
+        c.relay
+          ? BigInt(
+              (await relayCall(c, "simulate", p.data, p.authorization)).gas,
+            )
+          : c.pub.estimateGas({
+              account: c.sponsor.address,
+              to: c.leaked.address,
+              data: p.data,
+              authorizationList: [p.authorization],
+            });
+      async function removeDelegation(c) {
+        const d = await current(c);
+        if (!d) return log("No active delegation");
+        const a = await c.wallet.signAuthorization({
+          account: c.leaked,
+          contractAddress: zeroAddress,
+        });
+        const h = c.relay
+          ? (await relayCall(c, "send", "0x", a)).hash
+          : await c.wallet.sendTransaction({
+              to: c.leaked.address,
+              data: "0x",
+              authorizationList: [a],
+              maxPriorityFeePerGas: 10000000n,
+            });
+        await c.pub.waitForTransactionReceipt({ hash: h });
+        log("✓ Delegation removed: " + h, "ok");
+      }
+      $("exec").onclick = () =>
+        run(async () => {
+          if (!$("own").checked)
+            throw new Error("Confirm wallet ownership first");
+          const c = ctx();
+          await guard(c);
+          if (
+            !c.relay &&
+            (await c.pub.getBalance({ address: c.sponsor.address })) === 0n
+          )
+            throw new Error(
+              `Sponsor balance is 0 on ${c.n.name}. Fund ${c.sponsor.address} first.`,
+            );
+          log("1/4 Preparing...");
+          const d0 = await current(c);
+          if (d0) log("Existing delegation " + d0 + " will be overwritten");
+          const p = await prepare(c);
+          log("2/4 Simulating...");
+          const g = await est(c, p);
+          log("✓ Simulation OK. Gas estimate: " + g, "ok");
+          if (
+            !confirm(
+              `Send a REAL transaction on ${c.n.name}? Tokens go to: ${p.SAFE ?? "-"}`,
+            )
+          )
+            return log("Cancelled");
+          log("3/4 Sending...");
+          const hash = c.relay
+            ? (await relayCall(c, "send", p.data, p.authorization)).hash
+            : await c.wallet.sendTransaction({
+                to: c.leaked.address,
+                data: p.data,
+                authorizationList: [p.authorization],
+                maxPriorityFeePerGas: 10000000n,
+              });
+          log("tx: " + hash + "  " + c.n.ex + "/tx/" + hash);
+          const r = await c.pub.waitForTransactionReceipt({ hash });
+          if (r.status !== "success") throw new Error("Transaction failed");
+          log("✓ Rescue transaction confirmed", "ok");
+          if (p.TOKEN && p.SAFE)
+            try {
+              const [dec, sym, bal] = await Promise.all([
+                c.pub.readContract({
+                  address: p.TOKEN,
+                  abi: ERC20,
+                  functionName: "decimals",
+                }),
+                c.pub
+                  .readContract({
+                    address: p.TOKEN,
+                    abi: ERC20,
+                    functionName: "symbol",
+                  })
+                  .catch(() => "token"),
+                c.pub.readContract({
+                  address: p.TOKEN,
+                  abi: ERC20,
+                  functionName: "balanceOf",
+                  args: [p.SAFE],
+                }),
+              ]);
+              log(
+                `${sym} balance (safe wallet): ${formatUnits(bal, dec)}`,
+                "ok",
+              );
+            } catch {}
+          log("4/4 Removing delegation...");
+          try {
+            await removeDelegation(c);
+          } catch (e) {
+            log(
+              "Delegation removal failed (rescue itself succeeded): " +
+                (e.shortMessage || e.message),
+              "err",
+            );
+          }
+          log("Done. Stop using the compromised wallet.", "ok");
+          refresh();
+        });
+
+      // ---------- backend & default ----------
+      function applyDefaults() {
+        if (!CFG) return;
+        const d = CFG.defaults || {},
+          nd = d[$("net").value] || {};
+        if (d.safe) $("safe").value = d.safe;
+        $("delegate").value = nd.delegate || "";
+        $("claim").value = nd.claim || "";
+        $("token").value = nd.token || "";
+        $("value").value = nd.value || "0";
+        $("action").value = nd.action || "claim_transfer";
+        $("claimData").value = "";
+      }
+      // selalu mulai bersih: calldata, private key, centang kepemilikan (tidak dipulihkan browser)
+      $("claimData").value = "";
+      $("leakedPk").value = "";
+      $("own").checked = false;
+      window.addEventListener("pageshow", (e) => {
+        if (e.persisted) location.reload();
+      });
+      $("btnTheme").onchange = () => applyBtn($("btnTheme").value);
+      {
+        let v = "default";
+        try {
+          v = localStorage.getItem("rescue.btn") || "default";
+        } catch {}
+        applyBtn(v);
+      }
+      renderSP();
+      fetch("/api/config")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          if (!j) {
+            log("Backend not connected. Run npm start.", "err");
+            return;
+          }
+          CFG = j;
+          applyDefaults();
+          if (j.configError) log("✗ " + j.configError, "err");
+          renderSP();
+          log(
+            "Backend connected. RPC: " +
+              Object.entries(j.networks)
+                .map(([k, v]) => k + (v.available ? " OK" : " not set"))
+                .join(", ") +
+              ". Defaults loaded.",
+            "ok",
+          );
+        })
+        .catch(() => {
+          log("Backend not connected. Run npm start.", "err");
+        });
+      window.addEventListener("load", () => {
+        try {
+          if (
+            !getComputedStyle(document.documentElement).getPropertyValue(
+              "--bs-body-font-family",
+            )
+          )
+            log(
+              "Bootstrap CSS not loaded (fallback styles in use). Run npm install, then restart the server. Check http://localhost:3000/vendor/bootstrap.css",
+              "err",
+            );
+        } catch {}
+      });
+      log(
+        "Ready. Generate a sponsor wallet, fund it, then open Rescue Wallet.",
+      );
+    </script>
+  </body>
+</html>
