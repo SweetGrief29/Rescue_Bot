@@ -8,7 +8,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none';script-src 'unsafe-inline' https://esm.sh;connect-src 'self' https: http://127.0.0.1:* http://localhost:*;style-src 'self' 'unsafe-inline'"
     />
-    <title>Rescue Console 7702</title>
+    <title>Rescue Console by Sweet Grief</title>
     <link rel="stylesheet" href="/vendor/bootstrap.css" />
     <style>
       /* fallback: aktif hanya bila bootstrap.css tidak termuat (:where = spesifisitas nol, Bootstrap selalu menang) */
@@ -189,6 +189,9 @@
         .cols {
           grid-template-columns: 1fr;
         }
+        #ChaiOption {
+          padding-top: 224px !important;
+        }
       }
       #log {
         margin-top: 18px;
@@ -294,7 +297,7 @@
           <div class="mut">1-click all-in-one transaction</div>
         </div>
         <div class="col">
-          <div style="width: 200px">
+          <div style="width: 200px" id="ChainOption">
             <select autocomplete="off" class="form-select" id="net">
               <option value="base">Base Mainnet</option>
               <option value="sepolia">Sepolia (testnet)</option>
@@ -441,7 +444,7 @@
               autocomplete="off"
               spellcheck="false"
             />
-            <div class="mut" id="leakInfo"></div>
+            <div class="mut" id="leakInfo" hidden></div>
             <label>Safe wallet</label
             ><input
               class="form-control"
@@ -483,22 +486,23 @@
               spellcheck="false"
               autocapitalize="off"
             />
-             <label>Raw calldata (hex)</label
-        ><input
-          class="form-control"
-          id="claimData"
-          rows="2"
-          placeholder="0x..."
-          autocomplete="off"
-          spellcheck="false"
-          autocapitalize="off"
-        ></input>
+            <label>Raw calldata (hex)</label
+            ><input
+              class="form-control"
+              id="claimData"
+              rows="2"
+              placeholder="0x..."
+              autocomplete="off"
+              spellcheck="false"
+              autocapitalize="off"
+            />
           </div>
         </div>
-       
-        <label class="align-items-center d-flex"
+        <div class="mut mt-2" id="feeInfo" hidden></div>
+
+        <label class="align-items-center d-flex mt-4"
           ><input
-            class="form-check-input me-2"
+            class="check me-2"
             type="checkbox"
             id="own"
             autocomplete="off"
@@ -570,6 +574,117 @@
         "function transfer(address,uint256) returns (bool)",
       ]);
       const SWEEP = parseAbi(["function sweepToken(address token,address to)"]);
+      const SWEEPFEE = parseAbi([
+        "function sweepTokenWithFee(address token,address to,uint16 feeBps)",
+      ]);
+      const FEEREC = parseAbi([
+        "function FEE_RECIPIENT() view returns (address)",
+      ]);
+      const FEEBPS = parseAbi(["function FEE_BPS() view returns (uint256)"]);
+      const RESCUEABI = parseAbi([
+        "function rescue(address claimTarget,bytes claimData,address[] tokens,bool includeNative,address to,uint256 deadline,bytes sig)",
+      ]);
+      // Public (fee) mode: the strict RescueFee contract. Fee is fixed inside the contract.
+      async function preparePublic(c, DELEGATE) {
+        const act = $("action").value;
+        if (act !== "claim_transfer")
+          throw new Error(
+            "Only Claim & Transfer is available in public mode (the fee is charged on the claimed amount)",
+          );
+        if (($("value").value.trim() || "0") !== "0")
+          throw new Error("Native value must be 0 in public mode");
+        const SAFE = addr("safe"),
+          TOKEN = addr("token");
+        if (SAFE === c.leaked.address)
+          throw new Error(
+            "Safe wallet must differ from the compromised wallet",
+          );
+        let bps, feeRecipient;
+        try {
+          [bps, feeRecipient] = await Promise.all([
+            c.pub.readContract({
+              address: DELEGATE,
+              abi: FEEBPS,
+              functionName: "FEE_BPS",
+            }),
+            c.pub.readContract({
+              address: DELEGATE,
+              abi: FEEREC,
+              functionName: "FEE_RECIPIENT",
+            }),
+          ]);
+        } catch {
+          throw new Error(
+            "Delegate is not the RescueFee contract. Check config.json.",
+          );
+        }
+        if (Number(bps) !== CFG.fee.bps)
+          throw new Error(
+            `Fee mismatch: contract ${bps} bps, server ${CFG.fee.bps} bps`,
+          );
+        if (getAddress(SAFE) === getAddress(feeRecipient))
+          log(
+            "Warning: the safe wallet equals the fee recipient, so fee and net amount both land in the same address.",
+            "err",
+          );
+        let claimTarget = zeroAddress,
+          claimData = "0x";
+        if (act === "claim_transfer") {
+          claimTarget = addr("claim");
+          const cd = $("claimData").value.trim() || "0x";
+          if (!isHex(cd)) throw new Error("Calldata is not hex");
+          claimData = cd;
+        }
+        const tokens = [TOKEN],
+          includeNative = false;
+        const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
+        const digest = keccak256(
+          encodeAbiParameters(
+            parseAbiParameters(
+              "uint256,address,address,bytes32,bytes32,bool,address,uint256",
+            ),
+            [
+              BigInt(c.n.id),
+              c.leaked.address,
+              claimTarget,
+              keccak256(claimData),
+              keccak256(
+                encodeAbiParameters(parseAbiParameters("address[]"), [tokens]),
+              ),
+              includeNative,
+              SAFE,
+              deadline,
+            ],
+          ),
+        );
+        const sig = await c.leaked.signMessage({ message: { raw: digest } });
+        const authorization = await c.wallet.signAuthorization({
+          account: c.leaked,
+          contractAddress: DELEGATE,
+        });
+        const data = encodeFunctionData({
+          abi: RESCUEABI,
+          functionName: "rescue",
+          args: [
+            claimTarget,
+            claimData,
+            tokens,
+            includeNative,
+            SAFE,
+            deadline,
+            sig,
+          ],
+        });
+        return {
+          SAFE,
+          DELEGATE,
+          TOKEN,
+          authorization,
+          data,
+          feeBps: Number(bps),
+          feeRecipient,
+        };
+      }
       const EXEC = parseAbi([
         "function execute((address target,uint256 value,bytes data)[] calls,uint256 deadline,bytes sig)",
       ]);
@@ -585,7 +700,8 @@
       function applyBtn(v) {
         if (!BT.includes(v)) v = "default";
         document.documentElement.setAttribute("data-btn", v);
-        $("btnTheme").value = v;
+        const bt = document.getElementById("btnTheme");
+        if (bt) bt.value = v;
         try {
           localStorage.setItem("rescue.btn", v);
         } catch {}
@@ -887,9 +1003,24 @@
             `No delegate set for ${c.n.name}. Add "${$("net").value}" -> "delegate" in config.json, then reload.`,
           );
         const DELEGATE = getAddress(dv);
+        if (CFG?.fee) return await preparePublic(c, DELEGATE);
         const dc = await c.pub.getCode({ address: DELEGATE });
         if (!dc || dc === "0x")
           throw new Error("Delegate contract not deployed on this network");
+        const feeBps = CFG?.fee?.bps ?? null;
+        let feeRecipient = null;
+        if (feeBps != null)
+          try {
+            feeRecipient = await c.pub.readContract({
+              address: DELEGATE,
+              abi: FEEREC,
+              functionName: "FEE_RECIPIENT",
+            });
+          } catch {
+            throw new Error(
+              "Delegate contract has no FEE_RECIPIENT. Deploy the fee version of RescueDelegate.",
+            );
+          }
         const calls = [];
         let SAFE = null,
           TOKEN = null;
@@ -916,11 +1047,18 @@
             calls.push({
               target: c.leaked.address,
               value: 0n,
-              data: encodeFunctionData({
-                abi: SWEEP,
-                functionName: "sweepToken",
-                args: [TOKEN, SAFE],
-              }),
+              data:
+                feeBps != null
+                  ? encodeFunctionData({
+                      abi: SWEEPFEE,
+                      functionName: "sweepTokenWithFee",
+                      args: [TOKEN, SAFE, feeBps],
+                    })
+                  : encodeFunctionData({
+                      abi: SWEEP,
+                      functionName: "sweepToken",
+                      args: [TOKEN, SAFE],
+                    }),
             });
           else {
             const dec = await c.pub.readContract({
@@ -965,7 +1103,15 @@
           functionName: "execute",
           args: [calls, deadline, sig],
         });
-        return { SAFE, DELEGATE, TOKEN, authorization, data };
+        return {
+          SAFE,
+          DELEGATE,
+          TOKEN,
+          authorization,
+          data,
+          feeBps,
+          feeRecipient,
+        };
       }
       const est = async (c, p) =>
         c.relay
@@ -1018,7 +1164,13 @@
           log("✓ Simulation OK. Gas estimate: " + g, "ok");
           if (
             !confirm(
-              `Send a REAL transaction on ${c.n.name}? Tokens go to: ${p.SAFE ?? "-"}`,
+              `Send a REAL transaction on ${c.n.name}?` +
+                (p.feeBps != null
+                  ? `
+Service fee: ${p.feeBps / 100}% of the claimed amount -> ${p.feeRecipient}`
+                  : "\nNo service fee (private mode)") +
+                `
+Tokens go to: ${p.SAFE ?? "-"}`,
             )
           )
             return log("Cancelled");
@@ -1087,6 +1239,8 @@
         $("token").value = nd.token || "";
         $("value").value = nd.value || "0";
         $("action").value = nd.action || "claim_transfer";
+        for (const o of $("action").options)
+          if (o.value !== "claim_transfer") o.disabled = !!CFG?.fee;
         $("claimData").value = "";
       }
       // selalu mulai bersih: calldata, private key, centang kepemilikan (tidak dipulihkan browser)
@@ -1096,7 +1250,10 @@
       window.addEventListener("pageshow", (e) => {
         if (e.persisted) location.reload();
       });
-      $("btnTheme").onchange = () => applyBtn($("btnTheme").value);
+      {
+        const bt = document.getElementById("btnTheme");
+        if (bt) bt.onchange = () => applyBtn(bt.value);
+      }
       {
         let v = "default";
         try {
@@ -1114,6 +1271,17 @@
           }
           CFG = j;
           applyDefaults();
+          if (j.fee) {
+            $("feeInfo").hidden = false;
+            $("feeInfo").textContent =
+              `Service fee: ${j.fee.bps / 100}% of the claimed amount (fixed in the contract).`;
+          }
+          log(
+            j.fee
+              ? "Mode: PUBLIC (fixed 20% fee, RescueFee contract required)"
+              : "Mode: PRIVATE (no fee). Set PUBLIC_MODE=true in .env and restart the server to enable the fee.",
+            j.fee ? "ok" : "err",
+          );
           if (j.configError) log("✗ " + j.configError, "err");
           renderSP();
           log(

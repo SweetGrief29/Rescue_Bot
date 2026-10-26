@@ -1,8 +1,9 @@
 ======== SEPOLIA ========
 Smart contract 100% = 0x9cfb01ce1FF55F303A054c191e98660245cca940
+Smart contract 80% = 0x3Dff2693d2ba9baa0c7386988b7a4Cf2BE6b3Bd2
 Token test $GGAR = 0x900E13430332fe13D8A628ED3f5bdb4495608B52
 
 ======== Base ========
 Smart Contract 100% = 0x1663B3278CfD96d3476838d628e55e1A8c4541B2
 
-ngrok http 3000 --host-header=localhost:300
+ngrok http 3000 --host-header=localhost:3000

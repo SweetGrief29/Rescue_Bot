@@ -2,11 +2,11 @@
   "safe": "",
   "sepolia": {
     "action": "claim_transfer",
-    "delegate": "0x9cfb01ce1FF55F303A054c191e98660245cca940",
+    "delegate": "0x9a7183073C82a4810f3735ed2EC4C6188c05CA66",
     "token": "",
     "claim": "",
     "claimData": "",
-    "amount": "all",
+    "allowedTargets": [],
     "value": "0"
   },
   "base": {
@@ -15,7 +15,7 @@
     "token": "",
     "claim": "",
     "claimData": "",
-    "amount": "all",
+    "allowedTargets": [],
     "value": "0"
   }
 }
