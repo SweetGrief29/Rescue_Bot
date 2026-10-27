@@ -1,4 +1,4 @@
-# Rescue Console (EIP-7702)
+# Rescue Console
 
 Alat untuk menyelamatkan token airdrop dari wallet yang private key-nya bocor. Dalam **satu transaksi atomik** alat ini:
 
