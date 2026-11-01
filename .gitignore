@@ -4,3 +4,4 @@ contracts
 test
 .env.example
 smart_contract.txt
+.gitignore
