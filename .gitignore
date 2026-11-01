@@ -1,6 +1,0 @@
-.env
-node_modules
-contracts
-test
-.env.example
-smart_contract.txt
