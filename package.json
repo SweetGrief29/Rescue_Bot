@@ -2,6 +2,9 @@
   "name": "rescue-7702",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
   "scripts": {
     "start": "node server.mjs",
     "build": "esbuild scripts/viem-entry.mjs --bundle --format=esm --minify --target=es2022 --outfile=vendor/viem.js",

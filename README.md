@@ -17,11 +17,13 @@ Gas dibayar oleh **wallet sponsor**, sehingga wallet bocor tidak perlu menerima 
 
 | File                           | Fungsi                                                                                                                        | Rahasia? | Anda edit? |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | -------- | ---------- |
-| `.env`                         | Rahasia dan pengaturan server: **RPC Infura**, key sponsor, mode, domain publik. Dibuat dari `.env.example`.                  | **Ya**   | Ya         |
-| `.env.example`                 | Contoh isi `.env` (tanpa nilai rahasia).                                                                                      | Tidak    | Tidak      |
+| `.env`                         | Rahasia dan pengaturan server: **RPC Infura**, key sponsor, mode, domain publik. Dibuat dari `env.example`.                   | **Ya**   | Ya         |
+| `env.example`                  | Contoh isi `.env` (tanpa nilai rahasia).                                                                                      | Tidak    | Tidak      |
 | `config.json`                  | Pengaturan non-rahasia per jaringan: **alamat kontrak delegate**, token, target klaim, daftar `allowedTargets`.               | Tidak    | Ya         |
 | `server.mjs`                   | Backend lokal: menyajikan halaman, meneruskan RPC (key Infura tersembunyi dari browser), relay sponsor, validasi mode publik. | Tidak    | Jarang     |
-| `index.html`                   | Halaman web (UI). Penandatanganan terjadi di sini.                                                                            | Tidak    | Jarang     |
+| `index.html`                   | Halaman web (UI): tampilan dan CSP.                                                                                           | Tidak    | Jarang     |
+| `app.js`                       | Logika halaman. Penandatanganan terjadi di sini, di browser.                                                                  | Tidak    | Jarang     |
+| `scripts/viem-entry.mjs`       | Daftar fungsi viem yang di-bundle ke `vendor/viem.js` (`npm run build`).                                                     | Tidak    | Jarang     |
 | `contracts/RescueDelegate.sol` | Kontrak **mode pribadi** (tanpa fee).                                                                                         | Tidak    | Tidak      |
 | `contracts/RescueFee.sol`      | Kontrak **mode publik**: fee 20% dari hasil klaim, tetap di kontrak.                                                          | Tidak    | Tidak      |
 | `contracts/MockAirdrop.sol`    | Token dan airdrop palsu untuk uji di Sepolia.                                                                                 | Tidak    | Tidak      |
@@ -41,7 +43,7 @@ Prasyarat: **Node.js 20.12 atau lebih baru** (disarankan 22 LTS). Cek dengan `no
 ```powershell
 cd D:\Recall\Rescue_Bot
 npm install
-copy .env.example .env
+copy env.example .env
 notepad .env          # isi RPC Infura dan lainnya (lihat bagian 3)
 notepad config.json   # isi alamat delegate dan lainnya (lihat bagian 4)
 npm start
@@ -55,7 +57,7 @@ Setiap kali Anda mengubah `.env` atau `server.mjs`, **restart server** (Ctrl+C l
 
 ## 3. `.env`: RPC Infura dan pengaturan server
 
-Salin `.env.example` menjadi `.env`, lalu isi. Berikut variabel yang dipakai **server** (`npm start`):
+Salin `env.example` menjadi `.env`, lalu isi. Berikut variabel yang dipakai **server** (`npm start`):
 
 | Variabel           | Isi                                           | Keterangan                                                                                                        |
 | ------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -65,13 +67,14 @@ Salin `.env.example` menjadi `.env`, lalu isi. Berikut variabel yang dipakai **s
 | `PORT`             | `3000`                                        | Port server.                                                                                                      |
 | `PUBLIC_MODE`      | `false` / `true`                              | **Pengubah mode** (lihat bagian 5).                                                                               |
 | `MAX_GAS`          | `700000`                                      | Batas gas per transaksi sponsor (mode publik). Rescue uji memakai sekitar 560 ribu, jadi pertimbangkan `1000000`. |
-| `PUBLIC_HOST`      | `domain-anda.com`                             | Domain yang diizinkan selain localhost. Bisa banyak (pisah koma) atau pola `*.ngrok-free.dev`.                    |
+| `MAX_FEE_GWEI`     | `5`                                           | Batas harga gas per transaksi sponsor (mode publik). Relay menolak mengirim saat gas di atas batas ini.           |
+| `PUBLIC_HOST`      | `domain-anda.com`                             | Domain yang diizinkan selain localhost (hanya di mode publik). Bisa banyak (pisah koma) atau `*.ngrok-free.dev`. |
 | `BIND`             | `127.0.0.1`                                   | Alamat yang didengarkan server. Biarkan bila memakai reverse proxy atau ngrok.                                    |
 | `TRUST_PROXY`      | `false` / `true`                              | `true` bila di belakang ngrok atau reverse proxy (agar batas permintaan dihitung per pengunjung).                 |
 | `CONFIRM_MAINNET`  | `no` / `yes`                                  | Relay server menolak kirim di Base kecuali `yes`.                                                                 |
 | `PRIORITY_FEE_WEI` | `10000000`                                    | Tip gas (0,01 gwei). Naikkan di jaringan dengan tip minimum tinggi.                                               |
 
-Variabel lain di `.env.example` (`NETWORK`, `LEAKED_PK`, `SAFE`, `DELEGATE`, `TOKEN`, `CLAIM`, `CLAIM_DATA`, `AMOUNT`, `ACTION`, `NATIVE_VALUE`, `DRY_RUN`) hanya dipakai oleh **CLI** (bagian 9). Kalau Anda hanya memakai web, abaikan.
+Variabel lain di `env.example` (`NETWORK`, `LEAKED_PK`, `SAFE`, `DELEGATE`, `TOKEN`, `CLAIM`, `CLAIM_DATA`, `AMOUNT`, `ACTION`, `NATIVE_VALUE`, `DRY_RUN`) hanya dipakai oleh **CLI** (bagian 9). Kalau Anda hanya memakai web, abaikan.
 
 Tips:
 
@@ -209,7 +212,7 @@ Jumlah token selalu **seluruh saldo (all)**.
    Atau `PUBLIC_HOST=*.ngrok-free.dev` agar tidak perlu diganti saat domain berubah.
 3. Restart server. Terminal menampilkan `Hosts : localhost, 127.0.0.1, <domain>`.
 
-**Jangan membuka server dalam mode pribadi**: siapa pun dengan URL bisa memakai wallet sponsor dan kuota Infura Anda tanpa fee dan tanpa validasi. Mode publik menyalakan rate limit (6 permintaan relay dan 120 permintaan RPC per menit per IP), batas gas, validasi template, dan fee.
+**Mode pribadi hanya melayani PC Anda sendiri**: server menolak semua permintaan yang bukan dari localhost, termasuk lewat ngrok atau reverse proxy, dan `PUBLIC_HOST` diabaikan. Ini karena relay mode pribadi tidak punya validasi: kalau terbuka, siapa pun bisa memakai wallet sponsor dan kuota Infura Anda. Mode publik menyalakan rate limit (6 permintaan relay dan 120 permintaan RPC per menit per IP), batas gas, batas harga gas (`MAX_FEE_GWEI`), validasi template, dan fee. Relay hanya membayar penghapusan delegasi untuk akun yang memang terdelegasi ke kontrak Anda.
 
 Isi `config.json` untuk mode publik: `delegate` = alamat `RescueFee`, `allowedTargets` terisi, `safe` kosong. Saldo `SPONSOR_PK` cukup kecil.
 
@@ -234,7 +237,7 @@ Selalu mulai dengan `NETWORK=sepolia` dan `DRY_RUN=true`. Untuk Base nyata: `NET
 - **Bootstrap** dimuat lokal dari `node_modules` lewat `/vendor/bootstrap.css`. Bila tampilan polos, jalankan `npm install` dan restart. Tanpa Bootstrap, gaya cadangan dipakai.
 - **viem** tidak lagi dimuat dari CDN. `npm install` otomatis membuat bundle lokal `vendor/viem.js` (lewat `npm run build`, dari `scripts/viem-entry.mjs`), yang disajikan server di `/vendor/viem.js`. Bila `index.html` mengimpor fungsi viem baru, tambahkan namanya di `scripts/viem-entry.mjs` lalu jalankan `npm run build`.
 - **Favicon sendiri**: taruh `favicon.ico` / `.png` / `.svg` / `.jpg` / `.webp` sejajar `server.mjs`, lalu restart. Tanpa file, ikon bawaan dipakai. Bila belum berubah, tutup tab atau coba jendela penyamaran (cache Chrome).
-- **CSP** ada di tag `<meta http-equiv="Content-Security-Policy">` di `index.html`. Bila Anda mengubahnya, pertahankan `img-src 'self' data:` (ikon, tanda centang, panah dropdown), `script-src 'self'` (untuk `/vendor/viem.js`) dan `connect-src 'self'` (halaman hanya boleh menghubungi backend sendiri, sehingga skrip apa pun tidak bisa mengirim private key ke server lain).
+- **CSP** ada di tag `<meta http-equiv="Content-Security-Policy">` di `index.html`. Skrip halaman ada di `app.js` (bukan inline), sehingga CSP tidak butuh `'unsafe-inline'` untuk skrip. Bila Anda mengubahnya, pertahankan `img-src 'self' data:` (ikon, tanda centang, panah dropdown), `script-src 'self'` (untuk `/app.js` dan `/vendor/viem.js`) dan `connect-src 'self'` (halaman hanya boleh menghubungi backend sendiri, sehingga skrip apa pun tidak bisa mengirim private key ke server lain).
 
 ---
 
@@ -257,6 +260,8 @@ Satu rescue uji memakai sekitar **560 ribu gas**. Biaya USD = `gas × harga gas 
 | `Only Claim & Transfer is available in public mode`            | Mode publik hanya mendukung klaim. Pilih Claim & Transfer.                                                                                                                                   |
 | `claim target not in allowedTargets`                           | Tambahkan kontrak klaim ke `allowedTargets` (jaringan yang sesuai).                                                                                                                          |
 | `gas ... exceeds cap`                                          | Naikkan `MAX_GAS` di `.env`, lalu restart.                                                                                                                                                   |
+| `gas price too high right now`                                 | Harga gas di atas `MAX_FEE_GWEI`. Tunggu, atau naikkan `MAX_FEE_GWEI` di `.env` lalu restart.                                                                                                 |
+| `private mode is local-only`                                   | Server mode pribadi diakses lewat ngrok/proxy/jaringan lain. Buka dari `http://127.0.0.1:3000`, atau aktifkan `PUBLIC_MODE=true`.                                                          |
 | `Sponsor balance is 0 on <net>`                                | Kirim ETH di jaringan itu ke alamat sponsor.                                                                                                                                                 |
 | `Service unavailable` di log                                   | Backend tidak terhubung. Pastikan `npm start` berjalan. Detail ada di console (F12).                                                                                                         |
 | Banyak error `violates connect-src` di console                 | RPC jaringan itu belum diisi di `.env` (lihat baris `RPC` di terminal). Isi, restart.                                                                                                        |
