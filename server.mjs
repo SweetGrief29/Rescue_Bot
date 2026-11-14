@@ -30,7 +30,20 @@ const limited = (key, max, windowMs = 60_000) => {
   a.push(now); hits.set(key, a); return a.length > max;
 };
 setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some((t) => now - t < 60_000)) hits.delete(k); }, 300_000).unref();
-const clientIp = (req) => (TRUST_PROXY ? String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() : "") || req.socket.remoteAddress || "?";
+// Pakai entri TERAKHIR X-Forwarded-For: itu yang ditambahkan proxy kita (ngrok/reverse proxy).
+// Entri pertama bisa diisi bebas oleh klien, sehingga rate limit bisa dilewati dengan IP palsu.
+const clientIp = (req) => (TRUST_PROXY ? String(req.headers["x-forwarded-for"] ?? "").split(",").pop().trim() : "") || req.socket.remoteAddress || "?";
+// Baca body JSON dengan batas ukuran; error membawa status HTTP untuk handler di bawah.
+const httpError = (status, message) => Object.assign(new Error(message), { status });
+async function readJson(req, max) {
+  const chunks = []; let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > max) throw httpError(413, "request body too large");
+    chunks.push(c);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw httpError(400, "invalid JSON body"); }
+}
 const RESCUE_ABI = V ? V.parseAbi(["function rescue(address claimTarget,bytes claimData,address[] tokens,bool includeNative,address to,uint256 deadline,bytes sig)"]) : null;
 // Public mode accepts ONLY rescue(...) on the delegated account (fee is fixed inside RescueFee) or delegation removal (data = 0x).
 function validateTemplate(net, authority, data) {
@@ -93,6 +106,11 @@ http.createServer(async (req, res) => {
       if (!fs.existsSync(f)) return send(res, 404, { error: "bootstrap not installed. Run: npm install" });
       return send(res, 200, fs.readFileSync(f), "text/css; charset=utf-8");
     }
+    if (req.method === "GET" && url.pathname === "/vendor/viem.js") {
+      const f = path.join(dir, "vendor/viem.js");
+      if (!fs.existsSync(f)) return send(res, 404, { error: "viem bundle missing. Run: npm install (or npm run build)" });
+      return send(res, 200, fs.readFileSync(f), "text/javascript; charset=utf-8");
+    }
 
     if (req.method === "GET" && url.pathname === "/api/config")
       return send(res, 200, {
@@ -107,8 +125,7 @@ http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/relay") {
       if (PUBLIC_MODE && limited("relay:" + ip, 6)) return send(res, 429, { error: "rate limit" });
       if (!sponsor) return send(res, 503, { error: "Relay disabled: set SPONSOR_PK in .env and run npm install" });
-      const chunks = []; for await (const c of req) chunks.push(c);
-      const b = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const b = await readJson(req, 256_000);
       const net = b.net, a = b.authorization ?? {};
       if (!RPCS[net] || !CHAINS[net]) return send(res, 400, { error: "network unavailable" });
       if (!V.isAddress(b.to) || !V.isHex(b.data)) return send(res, 400, { error: "invalid to/data" });
@@ -145,9 +162,7 @@ http.createServer(async (req, res) => {
       if (PUBLIC_MODE && limited("rpc:" + ip, 120)) return send(res, 429, { error: "rate limit" });
       const target = RPCS[m[1]];
       if (!target) return send(res, 503, { error: `RPC ${m[1]} not set in .env` });
-      const chunks = []; let size = 0;
-      for await (const c of req) { size += c.length; if (size > 1_000_000) return send(res, 413, { error: "too large" }); chunks.push(c); }
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const body = await readJson(req, 1_000_000);
       const calls = Array.isArray(body) ? body : [body];
       const bad = calls.find((c) => !ALLOW.has(c?.method));
       if (bad) return send(res, 403, { error: `method not allowed: ${bad?.method}` });
@@ -156,7 +171,9 @@ http.createServer(async (req, res) => {
     }
     send(res, 404, { error: "not found" });
   } catch (e) {
-    send(res, 500, { error: String(e.shortMessage ?? e.message ?? e) });
+    if (res.headersSent) return res.end();
+    if (e.status === 413) { res.setHeader("connection", "close"); res.on("finish", () => req.destroy()); } // sisa body tidak dibaca
+    send(res, e.status ?? 500, { error: String(e.shortMessage ?? e.message ?? e) });
   }
 }).listen(PORT, process.env.BIND ?? HOST, () => {
   console.log(`Rescue Console: http://${HOST}:${PORT}  (server.mjs versi 3)`);
@@ -165,6 +182,7 @@ http.createServer(async (req, res) => {
   console.log(`Hosts    : localhost, 127.0.0.1${PUBLIC_HOSTS.length ? ", " + PUBLIC_HOSTS.join(", ") : " (no PUBLIC_HOST set)"}`);
   if (PUBLIC_HOSTS.length && !PUBLIC_MODE) console.log("WARNING  : PUBLIC_HOST is set but PUBLIC_MODE=false. Anyone with the URL can use your sponsor wallet and RPC key.");
   if (!fs.existsSync(path.join(dir, "node_modules/bootstrap/dist/css/bootstrap.min.css"))) console.log("NOTE: Bootstrap not installed. Run: npm install");
+  if (!fs.existsSync(path.join(dir, "vendor/viem.js"))) console.log("WARNING  : vendor/viem.js missing, the page cannot load. Run: npm install (or npm run build)");
   const c = readConfig();
   if (configError) console.log("WARNING:", configError);
   console.log(`delegate : sepolia=${c.sepolia?.delegate || "(empty)"}  base=${c.base?.delegate || "(empty)"}`);

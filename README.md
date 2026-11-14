@@ -232,8 +232,9 @@ Selalu mulai dengan `NETWORK=sepolia` dan `DRY_RUN=true`. Untuk Base nyata: `NET
 ## 10. Tampilan: Bootstrap, favicon, CSP
 
 - **Bootstrap** dimuat lokal dari `node_modules` lewat `/vendor/bootstrap.css`. Bila tampilan polos, jalankan `npm install` dan restart. Tanpa Bootstrap, gaya cadangan dipakai.
+- **viem** tidak lagi dimuat dari CDN. `npm install` otomatis membuat bundle lokal `vendor/viem.js` (lewat `npm run build`, dari `scripts/viem-entry.mjs`), yang disajikan server di `/vendor/viem.js`. Bila `index.html` mengimpor fungsi viem baru, tambahkan namanya di `scripts/viem-entry.mjs` lalu jalankan `npm run build`.
 - **Favicon sendiri**: taruh `favicon.ico` / `.png` / `.svg` / `.jpg` / `.webp` sejajar `server.mjs`, lalu restart. Tanpa file, ikon bawaan dipakai. Bila belum berubah, tutup tab atau coba jendela penyamaran (cache Chrome).
-- **CSP** ada di tag `<meta http-equiv="Content-Security-Policy">` di `index.html`. Bila Anda mengubahnya, pertahankan `img-src 'self' data:` (ikon, tanda centang, panah dropdown) dan `connect-src 'self'` (minimal, agar RPC lewat backend).
+- **CSP** ada di tag `<meta http-equiv="Content-Security-Policy">` di `index.html`. Bila Anda mengubahnya, pertahankan `img-src 'self' data:` (ikon, tanda centang, panah dropdown), `script-src 'self'` (untuk `/vendor/viem.js`) dan `connect-src 'self'` (halaman hanya boleh menghubungi backend sendiri, sehingga skrip apa pun tidak bisa mengirim private key ke server lain).
 
 ---
 
@@ -262,6 +263,7 @@ Satu rescue uji memakai sekitar **560 ribu gas**. Biaya USD = `gas × harga gas 
 | `Element #... not found`                                       | `index.html` tidak lengkap atau versi lama. Ganti dengan versi terbaru.                                                                                                                      |
 | Tampilan polos, tanda centang tidak muncul                     | Bootstrap belum termuat (`npm install`) atau CSP tanpa `img-src`.                                                                                                                            |
 | Favicon tidak berubah                                          | Cek baris `Icon` di terminal, restart server, lalu Ctrl+F5 atau jendela penyamaran.                                                                                                          |
+| Halaman tidak bereaksi, console: `/vendor/viem.js` 404         | Bundle viem belum dibuat. Jalankan `npm install` (atau `npm run build`), lalu muat ulang.                                                                                                    |
 | `Cannot find module` / `process.loadEnvFile is not a function` | Jalankan `npm install` atau perbarui Node ke 20.12 atau lebih baru.                                                                                                                          |
 
 ---
@@ -274,5 +276,5 @@ Satu rescue uji memakai sekitar **560 ribu gas**. Biaya USD = `gas × harga gas 
 - [ ] `allowedTargets` hanya berisi kontrak klaim yang sudah diperiksa.
 - [ ] Kontrak diverifikasi di explorer dan **diaudit** sebelum memegang dana orang lain.
 - [ ] Tes `test/RescueFee.t.sol` dijalankan di Foundry (`forge test`), dan kasus penolakan relay diuji di Sepolia.
-- [ ] Ganti pustaka dari `esm.sh` ke salinan lokal bila akan dipakai luas (halaman ini memegang private key).
+- [x] Pustaka viem disajikan lokal (`vendor/viem.js`), bukan dari CDN; CSP `connect-src 'self'`.
 - [ ] Pertimbangkan aspek hukum dan kepercayaan sebelum membuka layanan yang meminta private key atau memungut fee.

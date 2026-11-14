@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none';script-src 'unsafe-inline' https://esm.sh;connect-src 'self' https: http://127.0.0.1:* http://localhost:*;style-src 'self' 'unsafe-inline';img-src 'self' data:"
+      content="default-src 'none';script-src 'self' 'unsafe-inline';connect-src 'self';style-src 'self' 'unsafe-inline';img-src 'self' data:"
     />
     <title>Rescue Console by Sweet Grief</title>
     <link rel="icon" href="/favicon" />
@@ -524,14 +524,12 @@
         isHex,
         zeroAddress,
         toHex,
-      } from "https://esm.sh/viem@2.30.0";
-      import {
         privateKeyToAccount,
         generatePrivateKey,
         generateMnemonic,
         mnemonicToAccount,
         english,
-      } from "https://esm.sh/viem@2.30.0/accounts";
+      } from "/vendor/viem.js"; // bundle lokal dari node_modules (npm run build), bukan CDN
       const $ = (i) => {
         const e = document.getElementById(i);
         if (!e)
@@ -735,12 +733,13 @@
       // ---------- jaringan & konteks ----------
       function netCtx() {
         const net = $("net").value,
-          n = NETS[net],
-          rpc =
-            (document.getElementById("rpc")?.value || "").trim() ||
-            (CFG?.networks?.[net]?.available
-              ? location.origin + "/rpc/" + net
-              : n.rpc);
+          n = NETS[net];
+        // CSP connect-src 'self': hanya RPC lewat backend (/rpc/<net>) yang bisa dihubungi
+        if (!CFG?.networks?.[net]?.available)
+          throw new Error(
+            `RPC for ${net} is not set. Fill ${net === "base" ? "BASE_RPC" : "SEPOLIA_RPC"} in .env and restart the server.`,
+          );
+        const rpc = location.origin + "/rpc/" + net;
         const chain = {
           id: n.id,
           name: n.name,
