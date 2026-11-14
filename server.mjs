@@ -67,6 +67,18 @@ function validateTemplate(net, authority, data) {
   const allowed = (readConfig()[net]?.allowedTargets ?? []).map((a) => V.getAddress(a));
   if (!allowed.includes(V.getAddress(claimTarget))) throw new Error("claim target not in allowedTargets (config.json)");
 }
+// Mode publik: delegate di config.json harus kontrak RescueFee dengan fee yang sama (hasil yang benar di-cache).
+const FEE_ABI = V ? V.parseAbi(["function FEE_BPS() view returns (uint256)"]) : null;
+const feeOk = new Set();
+async function assertFeeContract(net, pub, delegate) {
+  const k = net + ":" + delegate;
+  if (feeOk.has(k)) return;
+  let bps;
+  try { bps = await pub.readContract({ address: delegate, abi: FEE_ABI, functionName: "FEE_BPS" }); }
+  catch { throw new Error(`delegate ${delegate} on ${net} is not the RescueFee contract (public mode requires it). Fix config.json.`); }
+  if (Number(bps) !== FEE_BPS) throw new Error(`fee mismatch on ${net}: contract ${bps} bps, server ${FEE_BPS} bps`);
+  feeOk.add(k);
+}
 const RPCS = { sepolia: process.env.SEPOLIA_RPC, base: process.env.BASE_RPC };
 // Jangan pernah membocorkan URL RPC (berisi API key Infura) lewat pesan error ke browser
 const scrub = (s) => Object.values(RPCS).filter(Boolean).reduce((m, u) => m.split(u).join("<rpc>"), String(s)).replace(/infura\.io\/v3\/[0-9a-zA-Z]+/g, "infura.io/v3/<key>");
@@ -167,10 +179,20 @@ http.createServer(async (req, res) => {
       if (PUBLIC_MODE) { try { validateTemplate(net, authority, b.data); } catch (e) { return send(res, 403, { error: "template rejected: " + e.message }); } }
       const transport = V.http(RPCS[net]);
       const pub = V.createPublicClient({ chain: CHAINS[net], transport });
+      // Authorization hanya berlaku bila nonce-nya = nonce akun saat ini dan akun itu EOA (atau sudah berdelegasi).
+      // Bila tidak, node MELEWATI authorization tanpa error: simulasi "sukses" sebagai call kosong ke EOA,
+      // dan sponsor membayar gas untuk transaksi yang tidak melakukan apa pun (bisa diulang tanpa batas).
+      const [acctNonce, acctCode] = await Promise.all([
+        pub.getTransactionCount({ address: authority, blockTag: "pending" }),
+        pub.getCode({ address: authority }),
+      ]);
+      if (acctNonce !== Number(a.nonce)) return send(res, 409, { error: `authorization nonce ${a.nonce} does not match the wallet nonce ${acctNonce}. Reload and try again.` });
+      const code = (acctCode ?? "0x").toLowerCase();
+      if (code !== "0x" && !(code.startsWith("0xef0100") && code.length === 48)) return send(res, 403, { error: "account holds contract code, cannot be delegated" });
+      if (PUBLIC_MODE && !removal) { try { await assertFeeContract(net, pub, V.getAddress(ours)); } catch (e) { return send(res, 403, { error: e.message }); } }
       if (PUBLIC_MODE && removal) {
         // sponsor hanya membayar penghapusan delegasi ke kontrak kita sendiri (mencegah spam transaksi gratis)
-        const code = (await pub.getCode({ address: authority })) ?? "0x";
-        if (!ours || code.toLowerCase() !== ("0xef0100" + V.getAddress(ours).slice(2)).toLowerCase())
+        if (!ours || code !== ("0xef0100" + V.getAddress(ours).slice(2)).toLowerCase())
           return send(res, 403, { error: "no delegation to our contract to remove" });
       }
       const estimate = async () => {
@@ -233,4 +255,12 @@ http.createServer(async (req, res) => {
   console.log(`Icon     : ${iconHit?.[0] ?? "(none, built-in icon)"}`);
   console.log(`RPC      : sepolia=${RPCS.sepolia ? "OK" : "NOT SET"}  base=${RPCS.base ? "OK" : "NOT SET"}`);
   console.log(`sponsor  : ${sponsor?.address ?? "(disabled: check SPONSOR_PK / npm install)"}`);
+  // mode publik: periksa sekali saat start bahwa delegate tiap jaringan memang RescueFee
+  if (PUBLIC_MODE && V) for (const n of ["sepolia", "base"]) {
+    const d = c[n]?.delegate;
+    if (!RPCS[n] || !d || !V.isAddress(d)) continue;
+    assertFeeContract(n, V.createPublicClient({ chain: CHAINS[n], transport: V.http(RPCS[n]) }), V.getAddress(d))
+      .then(() => console.log(`contract : ${n} delegate is RescueFee (${FEE_BPS / 100}% fee) OK`))
+      .catch((e) => console.log(`WARNING  : ${scrub(e.message)}`));
+  }
 });

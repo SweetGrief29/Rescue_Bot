@@ -594,6 +594,14 @@ Tokens go to: ${p.SAFE ?? "-"}`,
     )
       return log("Cancelled");
     log("3/4 Sending...");
+    const safeBal = () =>
+      c.pub.readContract({
+        address: p.TOKEN,
+        abi: ERC20,
+        functionName: "balanceOf",
+        args: [p.SAFE],
+      });
+    const balBefore = p.TOKEN && p.SAFE ? await safeBal() : null;
     const hash = c.relay
       ? (await relayCall(c, "send", p.data, p.authorization)).hash
       : await c.wallet.sendTransaction({
@@ -605,6 +613,17 @@ Tokens go to: ${p.SAFE ?? "-"}`,
     log("tx: " + hash + "  " + c.n.ex + "/tx/" + hash);
     const r = await c.pub.waitForTransactionReceipt({ hash });
     if (r.status !== "success") throw new Error("Transaction failed");
+    // Status "success" belum berarti rescue jalan: bila nonce wallet berubah sebelum transaksi masuk
+    // (pencuri memakai key yang sama), authorization dilewati dan transaksi jadi call kosong ke EOA.
+    let now = await current(c);
+    if (now !== p.DELEGATE) {
+      await new Promise((ok) => setTimeout(ok, 3000)); // node RPC bisa tertinggal satu blok
+      now = await current(c);
+    }
+    if (now !== p.DELEGATE)
+      throw new Error(
+        `Transaction mined but the delegation was NOT applied (current: ${now ?? "none"}). Nothing was rescued. The wallet nonce changed before the transaction landed (someone else is using this key). Try again.`,
+      );
     log("✓ Rescue transaction confirmed", "ok");
     if (p.TOKEN && p.SAFE)
       try {
@@ -628,10 +647,16 @@ Tokens go to: ${p.SAFE ?? "-"}`,
             args: [p.SAFE],
           }),
         ]);
-        log(
-          `${sym} balance (safe wallet): ${formatUnits(bal, dec)}`,
-          "ok",
-        );
+        if (balBefore != null && bal <= balBefore)
+          log(
+            `Warning: ${sym} balance of the safe wallet did not increase (${formatUnits(bal, dec)}). Check the transaction on the explorer; the token transfer may have failed silently.`,
+            "err",
+          );
+        else
+          log(
+            `${sym} received by safe wallet: +${formatUnits(bal - (balBefore ?? 0n), dec)} (balance ${formatUnits(bal, dec)})`,
+            "ok",
+          );
       } catch {}
     log("4/4 Removing delegation...");
     try {
