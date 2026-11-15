@@ -32,12 +32,28 @@ const PUBLIC_HOSTS = (PUBLIC_HOST ?? "").split(",").map((x) => x.trim().toLowerC
 const hostAllowed = (h) => PUBLIC_MODE && PUBLIC_HOSTS.some((p) => (p.startsWith("*.") ? h.endsWith(p.slice(1)) : h === p));
 const isLoopback = (a) => a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1";
 const TRUST_PROXY = process.env.TRUST_PROXY === "true";
-const hits = new Map();
-const limited = (key, max, windowMs = 60_000) => {
-  const now = Date.now(), a = (hits.get(key) ?? []).filter((t) => now - t < windowMs);
-  a.push(now); hits.set(key, a); return a.length > max;
+// ---- batas request (mode publik). Semua bisa diatur di .env ----
+const num = (name, def) => { const v = Number(process.env[name]); return Number.isFinite(v) && v > 0 ? v : def; };
+const LIMITS = {
+  reqPerMin: num("REQ_PER_MIN", 300),            // semua request (halaman, config, RPC) per IP per menit
+  rpcPerMin: num("RPC_PER_MIN", 120),            // call JSON-RPC per IP per menit (tiap call di dalam batch dihitung)
+  txPerMin: num("TX_PER_MIN", 10),               // eth_sendRawTransaction per IP per menit
+  rpcGlobalPerMin: num("RPC_GLOBAL_PER_MIN", 1500), // call JSON-RPC dari SEMUA pengunjung per menit
+  rpcPerDay: num("RPC_PER_DAY", 100000),         // call JSON-RPC dari SEMUA pengunjung per 24 jam (melindungi kuota Infura)
+  relayPerMin: 6,
 };
-setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some((t) => now - t < 60_000)) hits.delete(k); }, 300_000).unref();
+const DAY = 86_400_000;
+// penghitung jendela tetap: take() menambah `cost` dan mengembalikan sisa detik bila batas terlampaui (0 = masih boleh)
+const buckets = new Map();
+const take = (key, cost, max, windowMs = 60_000) => {
+  const now = Date.now();
+  let b = buckets.get(key);
+  if (!b || now - b.t >= windowMs) { b = { t: now, n: 0, w: windowMs }; buckets.set(key, b); }
+  if (b.n + cost > max) return Math.max(1, Math.ceil((b.t + windowMs - now) / 1000));
+  b.n += cost; return 0;
+};
+setInterval(() => { const now = Date.now(); for (const [k, b] of buckets) if (now - b.t >= b.w) buckets.delete(k); }, 300_000).unref();
+const tooMany = (res, wait, what) => { res.setHeader("retry-after", String(wait)); return send(res, 429, { error: `rate limit (${what}). Try again in ${wait}s.` }); };
 // Pakai entri TERAKHIR X-Forwarded-For: itu yang ditambahkan proxy kita (ngrok/reverse proxy).
 // Entri pertama bisa diisi bebas oleh klien, sehingga rate limit bisa dilewati dengan IP palsu.
 const clientIp = (req) => (TRUST_PROXY ? String(req.headers["x-forwarded-for"] ?? "").split(",").pop().trim() : "") || req.socket.remoteAddress || "?";
@@ -129,6 +145,8 @@ http.createServer(async (req, res) => {
     const origin = req.headers.origin;
     if (origin && origin !== `http://${host}` && !(isPublicHost && origin === `https://${host}`)) return send(res, 403, { error: `origin rejected: ${origin}` });
     const ip = clientIp(req);
+    let wait;
+    if (PUBLIC_MODE && (wait = take("req:" + ip, 1, LIMITS.reqPerMin))) return tooMany(res, wait, "too many requests");
 
     const url = new URL(req.url, `http://${host}`);
 
@@ -155,7 +173,7 @@ http.createServer(async (req, res) => {
 
     // Sponsor menandatangani & membayar gas di server; key wallet bocor tidak pernah sampai sini.
     if (req.method === "POST" && url.pathname === "/api/relay") {
-      if (PUBLIC_MODE && limited("relay:" + ip, 6)) return send(res, 429, { error: "rate limit" });
+      if (PUBLIC_MODE && (wait = take("relay:" + ip, 1, LIMITS.relayPerMin))) return tooMany(res, wait, "relay");
       if (!sponsor) return send(res, 503, { error: "Relay disabled: set SPONSOR_PK in .env and run npm install" });
       const b = await readJson(req, 256_000);
       if (!b || typeof b !== "object") return send(res, 400, { error: "invalid body" });
@@ -220,7 +238,6 @@ http.createServer(async (req, res) => {
 
     const m = url.pathname.match(/^\/rpc\/(sepolia|base)$/);
     if (req.method === "POST" && m) {
-      if (PUBLIC_MODE && limited("rpc:" + ip, 120)) return send(res, 429, { error: "rate limit" });
       const target = RPCS[m[1]];
       if (!target) return send(res, 503, { error: `RPC ${m[1]} not set in .env` });
       const body = await readJson(req, 1_000_000);
@@ -228,6 +245,14 @@ http.createServer(async (req, res) => {
       if (calls.length === 0 || calls.length > 50) return send(res, 400, { error: "batch must have 1-50 calls" });
       const bad = calls.find((c) => !ALLOW.has(c?.method));
       if (bad) return send(res, 403, { error: `method not allowed: ${bad?.method}` });
+      if (PUBLIC_MODE) {
+        // tiap call di dalam batch dihitung, jadi batch tidak bisa dipakai untuk melewati batas
+        const n = calls.length, tx = calls.filter((c) => c.method === "eth_sendRawTransaction").length;
+        if ((wait = take("rpc:" + ip, n, LIMITS.rpcPerMin))) return tooMany(res, wait, "RPC calls per minute");
+        if (tx && (wait = take("tx:" + ip, tx, LIMITS.txPerMin))) return tooMany(res, wait, "transactions per minute");
+        if ((wait = take("rpc:*", n, LIMITS.rpcGlobalPerMin))) return tooMany(res, wait, "service is busy");
+        if ((wait = take("rpc:day", n, LIMITS.rpcPerDay, DAY))) { console.log(`[429] daily RPC limit reached (${LIMITS.rpcPerDay}); resets in ${Math.ceil(wait / 60)} min`); return tooMany(res, wait, "daily service limit reached"); }
+      }
       const up = await fetch(target, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
       return send(res, up.status, scrub(await up.text()));
     }
@@ -244,6 +269,8 @@ http.createServer(async (req, res) => {
   console.log(`Folder   : ${dir}`);
   console.log(PUBLIC_MODE ? `MODE     : PUBLIC (fixed ${FEE_BPS / 100}% fee on the claimed amount, gas cap ${MAX_GAS}, fee cap ${MAX_FEE_GWEI} gwei)` : "MODE     : private (no fee, local-only)");
   console.log(`Hosts    : localhost, 127.0.0.1${PUBLIC_MODE && PUBLIC_HOSTS.length ? ", " + PUBLIC_HOSTS.join(", ") : ""}`);
+  if (PUBLIC_MODE) console.log(`Limits   : per IP/min: ${LIMITS.reqPerMin} requests, ${LIMITS.rpcPerMin} RPC calls, ${LIMITS.txPerMin} tx | all users: ${LIMITS.rpcGlobalPerMin} RPC/min, ${LIMITS.rpcPerDay} RPC/day`);
+  if (PUBLIC_MODE && PUBLIC_HOSTS.length && !TRUST_PROXY) console.log("WARNING  : TRUST_PROXY=false behind a tunnel/proxy means ALL visitors share one per-IP limit. Set TRUST_PROXY=true when using ngrok or a reverse proxy.");
   if (PUBLIC_HOSTS.length && !PUBLIC_MODE) console.log("NOTE     : PUBLIC_HOST is ignored because PUBLIC_MODE=false (private mode only answers local requests).");
   if (!PUBLIC_MODE && !isLoopback(bind) && bind !== "localhost") console.log(`NOTE     : BIND=${bind}, but private mode still rejects non-local connections.`);
   if (!fs.existsSync(path.join(dir, "node_modules/bootstrap/dist/css/bootstrap.min.css"))) console.log("NOTE: Bootstrap not installed. Run: npm install");

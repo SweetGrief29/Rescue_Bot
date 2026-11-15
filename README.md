@@ -193,6 +193,7 @@ Uji Sepolia dengan kontrak uji: deploy `MockToken`, `MockAirdrop`, kirim token k
    - **Token Address**: token yang akan dipindahkan,
    - **Native value**: biasanya `0`.
 4. Centang _I own this compromised wallet_, lalu **Execute**. Alur: persiapan, simulasi, satu konfirmasi (di mode publik menampilkan persen dan penerima fee), kirim, lalu hapus delegasi otomatis.
+5. Setelah selesai, kembali ke tab **Sponsor Wallet** dan pakai **Send remaining balance**: isi alamat wallet utama Anda, klik _Max_, lalu _Send_ untuk mengirim sisa ETH. Lakukan ini sebelum menghapus wallet sponsor. Halaman menolak bila tujuannya wallet bocor.
 
 Prioritas sponsor: wallet sponsor di browser dipakai lebih dulu. Bila tidak ada, dipakai `SPONSOR_PK` dari server (lewat relay).
 
@@ -212,7 +213,19 @@ Jumlah token selalu **seluruh saldo (all)**.
    Atau `PUBLIC_HOST=*.ngrok-free.dev` agar tidak perlu diganti saat domain berubah.
 3. Restart server. Terminal menampilkan `Hosts : localhost, 127.0.0.1, <domain>`.
 
-**Mode pribadi hanya melayani PC Anda sendiri**: server menolak semua permintaan yang bukan dari localhost, termasuk lewat ngrok atau reverse proxy, dan `PUBLIC_HOST` diabaikan. Ini karena relay mode pribadi tidak punya validasi: kalau terbuka, siapa pun bisa memakai wallet sponsor dan kuota Infura Anda. Mode publik menyalakan rate limit (6 permintaan relay dan 120 permintaan RPC per menit per IP), batas gas, batas harga gas (`MAX_FEE_GWEI`), validasi template, dan fee. Relay hanya membayar penghapusan delegasi untuk akun yang memang terdelegasi ke kontrak Anda.
+**Mode pribadi hanya melayani PC Anda sendiri**: server menolak semua permintaan yang bukan dari localhost, termasuk lewat ngrok atau reverse proxy, dan `PUBLIC_HOST` diabaikan. Ini karena relay mode pribadi tidak punya validasi: kalau terbuka, siapa pun bisa memakai wallet sponsor dan kuota Infura Anda. Mode publik menyalakan batas request (lihat tabel di bawah), batas gas, batas harga gas (`MAX_FEE_GWEI`), validasi template, dan fee. Relay hanya membayar penghapusan delegasi untuk akun yang memang terdelegasi ke kontrak Anda.
+
+Batas request mode publik (semua bisa diubah di `.env`, lalu restart):
+
+| Variabel             | Default  | Arti                                                                                             |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `REQ_PER_MIN`        | `300`    | Semua request per pengunjung (IP) per menit.                                                     |
+| `RPC_PER_MIN`        | `120`    | Call JSON-RPC per pengunjung per menit. Tiap call di dalam batch dihitung.                       |
+| `TX_PER_MIN`         | `10`     | Transaksi yang dikirim per pengunjung per menit.                                                 |
+| `RPC_GLOBAL_PER_MIN` | `1500`   | Call JSON-RPC dari semua pengunjung per menit.                                                   |
+| `RPC_PER_DAY`        | `100000` | Call JSON-RPC dari semua pengunjung per 24 jam. Sesuaikan dengan kuota Infura Anda.              |
+
+Saat batas terlampaui server membalas 429 dengan header `Retry-After`. Di belakang ngrok atau reverse proxy **wajib** `TRUST_PROXY=true`; tanpa itu semua pengunjung dihitung sebagai satu IP.
 
 Isi `config.json` untuk mode publik: `delegate` = alamat `RescueFee`, `allowedTargets` terisi, `safe` kosong. Saldo `SPONSOR_PK` cukup kecil.
 

@@ -203,6 +203,87 @@
       [hidden] {
         display: none !important;
       }
+      /* ===== Sponsor (temporary) wallet ===== */
+      .steps {
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin: 14px 0 0;
+        padding: 0;
+      }
+      .steps li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--bd);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 12px;
+        color: var(--mut);
+        line-height: 1.35;
+      }
+      .steps b {
+        flex: none;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 1px solid var(--mut);
+        color: var(--fg);
+        display: grid;
+        place-items: center;
+        font-weight: 600;
+      }
+      .wallet {
+        margin-top: 14px;
+        padding: 18px;
+        border: 1px solid var(--bd);
+        border-radius: 12px;
+        background: linear-gradient(160deg, #1b1b1f, var(--bg) 70%);
+      }
+      .wallet-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+      }
+      .pill {
+        border: 1px solid var(--bd);
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 12px;
+        color: var(--mut);
+      }
+      .wallet-label {
+        margin-top: 16px;
+        font-size: 12px;
+        color: var(--mut);
+      }
+      .wallet-balance {
+        font-size: 34px;
+        font-weight: 600;
+        line-height: 1.2;
+        letter-spacing: -0.5px;
+        overflow-wrap: anywhere;
+      }
+      .wallet-balance .unit {
+        font-size: 15px;
+        font-weight: 400;
+        color: var(--mut);
+        margin-left: 8px;
+        letter-spacing: 0;
+      }
+      .wallet-balance.empty {
+        color: var(--mut);
+      }
+      @media (max-width: 640px) {
+        .steps {
+          grid-template-columns: 1fr;
+        }
+        .wallet-balance {
+          font-size: 26px;
+        }
+      }
       /* ===== BUTTON THEME. Ganti lewat pemilih "Buttons" di halaman, atau set data-btn pada <html>: default | inverse | accent | soft ===== */
       :root {
         --btn-bg: transparent;
@@ -305,8 +386,14 @@
       <section id="t-sponsor">
         <h2>Sponsor Wallet</h2>
         <div class="mut mt-2">
-          Temporary wallet that pays gas. Created in this browser.
+          Temporary wallet that pays gas. Created in this browser, used once,
+          then emptied.
         </div>
+        <ol class="steps">
+          <li><b>1</b><span>Generate &amp; fund with a little ETH</span></li>
+          <li><b>2</b><span>Run the rescue</span></li>
+          <li><b>3</b><span>Send what is left back to your wallet</span></li>
+        </ol>
         <div id="chainBanner" class="alert alert-secondary mt-3"></div>
         <div id="spEmpty" class="card card-body" style="margin-top: 14px">
           <p>No sponsor wallet yet.</p>
@@ -316,18 +403,19 @@
           <div class="mut" id="beNote"></div>
         </div>
         <div id="spBox" hidden>
-          <div class="card card-body" style="margin-top: 14px">
-            <h3>Wallet Profile</h3>
-            <label>Fund on network</label
-            ><input
-              class="form-control"
-              id="spChain"
-              readonly
-              autocomplete="off"
-              spellcheck="false"
-              autocapitalize="off"
-            />
-            <label>Sponsor Address (send ETH here)</label>
+          <div class="card wallet">
+            <div class="wallet-top">
+              <span class="pill" id="spChain">-</span>
+              <button class="btn btn-outline-secondary btn-sm" id="refresh">
+                Refresh
+              </button>
+            </div>
+            <div class="wallet-label">Balance on <span id="netName">-</span></div>
+            <div class="wallet-balance">
+              <span id="spBal">-</span><span class="unit">ETH</span>
+            </div>
+            <div class="mut" id="spHint"></div>
+            <label>Sponsor address (send ETH here)</label>
             <div class="cp">
               <input
                 class="form-control"
@@ -343,26 +431,47 @@
             <div class="mut" style="margin-top: 6px">
               <a id="spLink" target="_blank" rel="noopener">View on explorer</a>
             </div>
-            <label>Balance on <span id="netName">-</span></label>
+          </div>
+
+          <div class="card card-body" style="margin-top: 14px">
+            <h3>Send remaining balance</h3>
+            <div class="mut">
+              When you are done, send the leftover ETH back to your main wallet.
+              Never send it to the compromised wallet.
+            </div>
+            <label>Destination (your main wallet)</label>
+            <input
+              class="form-control"
+              id="sendTo"
+              placeholder="0x..."
+              autocomplete="off"
+              spellcheck="false"
+              autocapitalize="off"
+            />
+            <label>Amount (ETH)</label>
             <div class="cp">
               <input
                 class="form-control"
-                id="spBal"
-                readonly
-                value="-"
+                id="sendAmt"
+                placeholder="0.0"
+                inputmode="decimal"
                 autocomplete="off"
                 spellcheck="false"
                 autocapitalize="off"
-              /><button class="btn btn-outline-secondary" id="refresh">
-                Refresh
+              /><button class="btn btn-outline-secondary" id="sendMax">
+                Max
               </button>
             </div>
-            <div class="mut" id="spHint"></div>
+            <div class="mut" id="sendInfo" style="margin-top: 6px"></div>
+            <div class="actions">
+              <button class="btn btn-primary" id="sendBtn">Send</button>
+            </div>
           </div>
+
           <div class="card card-body" style="margin-top: 14px">
             <h3>Wallet Keys</h3>
             <div class="mut">
-              Anyone with these controls the wallet. Never share.
+              Backup only. Anyone with these controls the wallet. Never share.
             </div>
             <label>Private Key</label>
             <div class="cp">
@@ -399,7 +508,8 @@
           </div>
         </div>
         <div class="actions" id="spBtns" hidden>
-          <button class="btn btn-primary" id="gen2">Generate New Wallet</button
+          <button class="btn btn-outline-secondary" id="gen2">
+            Generate New Wallet</button
           ><button class="btn btn-outline-danger" id="del">
             Delete Wallet
           </button>

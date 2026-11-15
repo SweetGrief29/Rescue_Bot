@@ -19,6 +19,7 @@ export {
   isHex,
   zeroAddress,
   toHex,
+  serializeTransaction,
 } from "viem";
 export {
   privateKeyToAccount,

@@ -16,6 +16,7 @@ import {
   isHex,
   zeroAddress,
   toHex,
+  serializeTransaction,
   privateKeyToAccount,
   generatePrivateKey,
   generateMnemonic,
@@ -321,7 +322,7 @@ function renderChain() {
   $("chainBanner").textContent = test
     ? `Active: ${n.name} Testnet (Chain ID ${n.id}). Fund with Sepolia ETH from a faucet.`
     : `Active: ${n.name} Mainnet (Chain ID ${n.id}). Real ETH. Send ETH on ${n.name}, not Ethereum mainnet.`;
-  $("spChain").value = `${n.name} (Chain ID ${n.id}), gas token: ETH`;
+  $("spChain").textContent = `${n.name} · Chain ID ${n.id}`;
   $("netName").textContent = n.name;
   const a = SP ? privateKeyToAccount(SP.pk).address : null;
   $("spLink").hidden = !a;
@@ -340,7 +341,9 @@ async function refresh() {
     const sa = SP ? privateKeyToAccount(SP.pk).address : CFG?.sponsor;
     if (sa) {
       const bal = await b.pub.getBalance({ address: sa });
-      $("spBal").value = fmt(bal) + " ETH";
+      spBalance = { key: b.net + ":" + sa, bal };
+      $("spBal").textContent = fmt(bal);
+      $("spBal").parentElement.classList.toggle("empty", bal === 0n);
       $("spHint").textContent =
         bal === 0n
           ? `Empty on ${b.n.name}. Send ETH on ${b.n.name} to the sponsor address.`
@@ -382,11 +385,21 @@ function renderSP() {
 }
 
 // ---------- sponsor wallet ----------
+// saldo terakhir yang terbaca untuk wallet sponsor di jaringan aktif (untuk peringatan sebelum menghapus)
+let spBalance = null;
+const leftover = () => {
+  if (!SP || !spBalance) return "";
+  const k = $("net").value + ":" + privateKeyToAccount(SP.pk).address;
+  return spBalance.key === k && spBalance.bal > 0n
+    ? `\n\nThis wallet still holds ${fmt(spBalance.bal)} ETH on ${NETS[$("net").value].name}. Use "Send remaining balance" first, or back up the recovery phrase.`
+    : "";
+};
 function newWallet() {
   if (
     SP &&
     !confirm(
-      "The old sponsor wallet will be removed. Make sure it is empty or backed up. Continue?",
+      "The old sponsor wallet will be removed. Make sure it is empty or backed up. Continue?" +
+        leftover(),
     )
   )
     return;
@@ -402,7 +415,8 @@ $("gen2").onclick = newWallet;
 $("del").onclick = () => {
   if (
     !confirm(
-      "Delete the sponsor wallet? Remaining funds are lost without the recovery phrase.",
+      "Delete the sponsor wallet? Remaining funds are lost without the recovery phrase." +
+        leftover(),
     )
   )
     return;
@@ -411,6 +425,133 @@ $("del").onclick = () => {
   renderSP();
   log("Sponsor wallet deleted");
 };
+
+// ---------- send: kirim sisa saldo wallet sponsor ke wallet utama ----------
+// OP-stack (Base): selain gas L2 ada biaya data L1, dibaca dari GasPriceOracle
+const L1_ORACLE = "0x420000000000000000000000000000000000000F";
+const L1ABI = parseAbi(["function getL1Fee(bytes) view returns (uint256)"]);
+let sendAll = false; // true setelah klik Max: kirim seluruh saldo dikurangi biaya
+// Biaya maksimum sebuah transfer ETH dari wallet sponsor ke `to`
+async function sendCost(c, account, to) {
+  const [fees, gasEst] = await Promise.all([
+    c.pub.estimateFeesPerGas(),
+    c.pub.estimateGas({ account: account.address, to, value: 1n }).catch(() => 21000n),
+  ]);
+  // transfer ke EOA selalu 21000; ke kontrak (smart wallet) beri cadangan 20%
+  const gas = gasEst > 21000n ? (gasEst * 12n) / 10n : 21000n;
+  // sertakan tip standar (PRIORITY_FEE_WEI) agar transaksi cepat masuk walau base fee nyaris nol
+  const maxFeePerGas = fees.maxFeePerGas + prioFee();
+  let l1 = 0n;
+  if (c.net === "base") {
+    const raw = serializeTransaction({
+      chainId: c.n.id,
+      type: "eip1559",
+      to,
+      value: 10n ** 18n,
+      gas,
+      maxFeePerGas,
+      maxPriorityFeePerGas: maxFeePerGas,
+      nonce: 1000,
+    });
+    const fee = await c.pub.readContract({
+      address: L1_ORACLE,
+      abi: L1ABI,
+      functionName: "getL1Fee",
+      args: [raw],
+    });
+    l1 = fee * 2n + 1_000_000_000n; // tanda tangan belum termasuk + biaya L1 bisa naik: cadangan 2x
+  }
+  return { gas, maxFeePerGas, total: gas * maxFeePerGas + l1 };
+}
+function sendCtx() {
+  if (!SP) throw new Error("No sponsor wallet");
+  const b = netCtx(),
+    account = privateKeyToAccount(SP.pk);
+  const v = $("sendTo").value.trim();
+  if (!isAddress(v)) throw new Error("Enter a valid destination address");
+  const to = getAddress(v);
+  if (to === account.address)
+    throw new Error("Destination is the sponsor wallet itself");
+  const k = $("leakedPk").value.trim(),
+    kk = k.startsWith("0x") ? k : "0x" + k;
+  if (KEYRE.test(kk) && privateKeyToAccount(kk).address === to)
+    throw new Error(
+      "Destination is the compromised wallet. Send to a wallet only you control.",
+    );
+  return { ...b, account, to };
+}
+$("sendAmt").oninput = () => {
+  sendAll = false;
+  $("sendInfo").textContent = "";
+};
+$("sendMax").onclick = () =>
+  run(async () => {
+    const c = sendCtx();
+    const [bal, cost] = await Promise.all([
+      c.pub.getBalance({ address: c.account.address }),
+      sendCost(c, c.account, c.to),
+    ]);
+    if (bal <= cost.total)
+      throw new Error(
+        `Balance (${formatEther(bal)} ETH) is too small to cover the network fee (${formatEther(cost.total)} ETH)`,
+      );
+    $("sendAmt").value = formatEther(bal - cost.total);
+    sendAll = true;
+    $("sendInfo").textContent =
+      `Max = balance minus network fee (up to ${formatEther(cost.total)} ETH).`;
+  });
+$("sendBtn").onclick = () =>
+  run(async () => {
+    const c = sendCtx();
+    await guard(c);
+    const [bal, cost] = await Promise.all([
+      c.pub.getBalance({ address: c.account.address }),
+      sendCost(c, c.account, c.to),
+    ]);
+    let value;
+    if (sendAll) {
+      value = bal - cost.total; // dihitung ulang saat kirim: saldo/biaya bisa berubah sejak klik Max
+      if (value <= 0n)
+        throw new Error("Balance is too small to cover the network fee");
+    } else {
+      const s = $("sendAmt").value.trim().replace(",", ".");
+      if (!/^\d+(\.\d{1,18})?$/.test(s)) throw new Error("Enter a valid amount");
+      value = parseEther(s);
+      if (value <= 0n) throw new Error("Amount must be greater than 0");
+      if (value + cost.total > bal)
+        throw new Error(
+          `Not enough balance: amount + network fee (${formatEther(cost.total)} ETH) exceeds ${formatEther(bal)} ETH. Use Max to send everything.`,
+        );
+    }
+    if (
+      !confirm(
+        `Send ${formatEther(value)} ETH on ${c.n.name}?\n\nTo: ${c.to}\nNetwork fee: up to ${formatEther(cost.total)} ETH\n\nDouble-check the address. This cannot be undone.`,
+      )
+    )
+      return log("Send cancelled");
+    const wallet = createWalletClient({
+      account: c.account,
+      chain: c.chain,
+      transport: http(c.rpc),
+    });
+    log(`Sending ${formatEther(value)} ETH to ${c.to}...`);
+    const hash = await wallet.sendTransaction({
+      to: c.to,
+      value,
+      gas: cost.gas,
+      maxFeePerGas: cost.maxFeePerGas,
+      // kirim semua: tip = max fee, sehingga biaya L2 tepat gas x maxFee dan tidak ada sisa receh
+      maxPriorityFeePerGas: sendAll ? cost.maxFeePerGas : prioFee(),
+    });
+    log("tx: " + hash + "  " + c.n.ex + "/tx/" + hash);
+    const r = await c.pub.waitForTransactionReceipt({ hash });
+    if (r.status !== "success") throw new Error("Send transaction failed");
+    log(`✓ Sent ${formatEther(value)} ETH to ${c.to}`, "ok");
+    $("sendAmt").value = "";
+    $("sendInfo").textContent = "";
+    sendAll = false;
+    await refresh();
+  });
 $("refresh").onclick = refresh;
 document.addEventListener("click", (e) => {
   const t = e.target;
